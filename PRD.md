@@ -51,6 +51,7 @@
 * 모바일 우선 최적화
 * WYSIWYG 편집기
 * Notion식 블록 에디터
+* 문서 내 첨부 파일
 * 복잡한 LLM 워크플로
 * 추후 기능 확장을 전제로 한 설계
 
@@ -76,8 +77,6 @@ moa-vault/
   notes/
     2026-06-08-local-first-note-app.md
     2026-06-08-vector-search.md
-
-  attachments/
 
   .moa/
     moa.sqlite
