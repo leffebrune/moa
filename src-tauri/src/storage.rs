@@ -907,7 +907,10 @@ fn parse_markdown_document(content: &str) -> Result<ParsedDocument, String> {
         .find("\n---\n")
         .ok_or_else(|| "unterminated YAML frontmatter".to_string())?;
     let yaml = &rest[..closing_index];
-    let body = rest[closing_index + "\n---\n".len()..].to_string();
+    let body = rest[closing_index + "\n---\n".len()..]
+        .strip_prefix('\n')
+        .unwrap_or(&rest[closing_index + "\n---\n".len()..])
+        .to_string();
     let mut meta: Frontmatter =
         serde_yaml::from_str(yaml).map_err(|err| format!("invalid YAML frontmatter: {err}"))?;
 
@@ -1008,12 +1011,17 @@ fn slugify_title(title: &str) -> String {
 fn sanitize_fts_query(query: &str) -> String {
     query
         .split_whitespace()
-        .map(|term| {
-            term.chars()
+        .filter_map(|term| {
+            let sanitized = term
+                .chars()
                 .filter(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-')
-                .collect::<String>()
+                .collect::<String>();
+            if sanitized.is_empty() {
+                None
+            } else {
+                Some(format!("{sanitized}*"))
+            }
         })
-        .filter(|term| !term.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -1202,6 +1210,7 @@ mod tests {
 
         assert!(document.relative_path.starts_with("notes/"));
         assert_eq!(document.relative_path.matches('/').count(), 1);
+        assert_eq!(document.body, "Body text for search.");
         assert!(vault.join(&document.relative_path).is_file());
 
         let listed = list_documents_in_vault(&vault, None).expect("documents list");
@@ -1219,6 +1228,29 @@ mod tests {
         )
         .expect("search works");
         assert_eq!(results.len(), 1);
+
+        save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: document.id,
+                title: "Korean Search".to_string(),
+                category: Some("Project".to_string()),
+                tags: vec!["markdown".to_string()],
+                body: "검색 가능한 본문입니다.".to_string(),
+            },
+        )
+        .expect("document saves");
+        let korean_results = search_documents_in_vault(
+            &vault,
+            SearchInput {
+                query: "본문".to_string(),
+                category: None,
+                tags: None,
+                sort: None,
+            },
+        )
+        .expect("korean prefix search works");
+        assert_eq!(korean_results.len(), 1);
 
         let _ = fs::remove_dir_all(vault);
     }

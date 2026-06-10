@@ -1,4 +1,4 @@
-mod storage;
+pub mod storage;
 
 use storage::{
     active_vault_path, create_document_in_vault, delete_document_in_vault,
