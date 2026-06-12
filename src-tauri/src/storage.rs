@@ -179,7 +179,6 @@ pub struct StorageStatus {
     pub database_path: String,
     pub document_count: usize,
     pub tag_count: usize,
-    pub pending_embedding_jobs: usize,
     pub issue_count: usize,
     pub issues: Vec<StorageIssue>,
 }
@@ -415,7 +414,6 @@ pub fn save_document_in_vault(
 
     write_file_replace(&full_path, content.as_bytes())?;
     index_single_document(vault_path, &existing.relative_path)?;
-    queue_embedding_job(vault_path, &existing.id, "document_saved")?;
 
     Ok(SaveResult {
         id: existing.id,
@@ -604,15 +602,6 @@ pub fn get_storage_status_in_vault(vault_path: &Path) -> Result<StorageStatus, S
     let conn = open_ready_database(vault_path)?;
     let document_count = count_rows(&conn, "documents")?;
     let tag_count = count_rows(&conn, "tags")?;
-    let pending_embedding_jobs: usize = conn
-        .query_row(
-            "SELECT COUNT(*) FROM embedding_jobs WHERE status = 'pending'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|err| format!("failed to count embedding jobs: {err}"))?
-        .try_into()
-        .unwrap_or(0);
 
     Ok(StorageStatus {
         vault_path: path_to_string(vault_path),
@@ -620,7 +609,6 @@ pub fn get_storage_status_in_vault(vault_path: &Path) -> Result<StorageStatus, S
         database_path: path_to_string(&database_path(vault_path)),
         document_count,
         tag_count,
-        pending_embedding_jobs,
         issue_count: status.issue_count,
         issues: status.issues,
     })
@@ -707,25 +695,6 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
           category,
           tags,
           tokenize = 'unicode61'
-        );
-
-        CREATE TABLE IF NOT EXISTS embeddings (
-          id TEXT PRIMARY KEY,
-          document_id TEXT NOT NULL,
-          chunk_index INTEGER NOT NULL,
-          chunk_hash TEXT NOT NULL,
-          embedding BLOB NOT NULL,
-          model_name TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS embedding_jobs (
-          document_id TEXT PRIMARY KEY,
-          reason TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
-          queued_at TEXT NOT NULL,
-          FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
         );
 
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -880,21 +849,6 @@ fn remove_missing_documents(
             .map_err(|err| format!("failed to remove stale document row: {err}"))?;
     }
 
-    Ok(())
-}
-
-fn queue_embedding_job(vault_path: &Path, document_id: &str, reason: &str) -> Result<(), String> {
-    let conn = open_ready_database(vault_path)?;
-    conn.execute(
-        "INSERT INTO embedding_jobs (document_id, reason, status, queued_at)
-         VALUES (?1, ?2, 'pending', ?3)
-         ON CONFLICT(document_id) DO UPDATE SET
-           reason = excluded.reason,
-           status = 'pending',
-           queued_at = excluded.queued_at",
-        params![document_id, reason, Utc::now().to_rfc3339()],
-    )
-    .map_err(|err| format!("failed to queue embedding job: {err}"))?;
     Ok(())
 }
 
@@ -1256,7 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn save_preserves_file_name_and_queues_embedding_job() {
+    fn save_preserves_file_name_and_updates_metadata() {
         let vault = temp_vault();
         initialize_vault_at(vault.clone()).expect("vault initializes");
         let document = create_document_in_vault(
@@ -1286,9 +1240,9 @@ mod tests {
         let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
         assert_eq!(reloaded.relative_path, original_path);
         assert_eq!(reloaded.title, "Changed Title");
-
-        let status = get_storage_status_in_vault(&vault).expect("status loads");
-        assert_eq!(status.pending_embedding_jobs, 1);
+        assert_eq!(reloaded.category.as_deref(), Some("Research"));
+        assert_eq!(reloaded.tags, vec!["fts"]);
+        assert_eq!(reloaded.body, "Changed body");
 
         let _ = fs::remove_dir_all(vault);
     }

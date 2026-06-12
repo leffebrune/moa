@@ -4,8 +4,12 @@ version = "0.1.0"
 description = "Local-first Markdown knowledge base"
 authors = ["you"]
 edition = "2021"
+autobins = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+storage-dev = []
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -13,6 +17,15 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "moa_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "moa"
+path = "src/main.rs"
+
+[[bin]]
+name = "storage_dev"
+path = "src/bin/storage_dev.rs"
+required-features = ["storage-dev"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -29,4 +42,3 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
-

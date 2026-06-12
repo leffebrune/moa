@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
-    "storage": "cargo run --manifest-path src-tauri/Cargo.toml --bin storage_dev --",
+    "storage": "cargo run --manifest-path src-tauri/Cargo.toml --features storage-dev --bin storage_dev --",
     "tauri": "tauri"
   },
   "license": "MIT",

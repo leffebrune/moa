@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
+type TauriWindow = Window & {
+  __TAURI_INTERNALS__?: unknown;
+};
+
 export type StorageIssue = {
   kind: string;
   message: string;
@@ -99,47 +103,68 @@ export type StorageStatus = {
   databasePath: string;
   documentCount: number;
   tagCount: number;
-  pendingEmbeddingJobs: number;
   issueCount: number;
   issues: StorageIssue[];
 };
 
 export function initializeVault(path?: string | null): Promise<VaultSummary> {
-  return invoke("initialize_vault", { path });
+  return desktopInvoke("initialize_vault", { path });
 }
 
 export function listDocuments(
   filter?: DocumentFilter | null,
 ): Promise<DocumentListItem[]> {
-  return invoke("list_documents", { filter });
+  return desktopInvoke("list_documents", { filter });
 }
 
 export function readDocument(id: string): Promise<DocumentPayload> {
-  return invoke("read_document", { id });
+  return desktopInvoke("read_document", { id });
 }
 
 export function createDocument(
   input: CreateDocumentInput,
 ): Promise<DocumentPayload> {
-  return invoke("create_document", { input });
+  return desktopInvoke("create_document", { input });
 }
 
 export function saveDocument(input: SaveDocumentInput): Promise<SaveResult> {
-  return invoke("save_document", { input });
+  return desktopInvoke("save_document", { input });
 }
 
 export function deleteDocument(id: string): Promise<DeleteResult> {
-  return invoke("delete_document", { id });
+  return desktopInvoke("delete_document", { id });
 }
 
 export function searchDocuments(input: SearchInput): Promise<SearchResult[]> {
-  return invoke("search_documents", { input });
+  return desktopInvoke("search_documents", { input });
 }
 
 export function rebuildIndex(): Promise<IndexStatus> {
-  return invoke("rebuild_index");
+  return desktopInvoke("rebuild_index");
 }
 
 export function getStorageStatus(): Promise<StorageStatus> {
-  return invoke("get_storage_status");
+  return desktopInvoke("get_storage_status");
+}
+
+function desktopInvoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  if (!isTauriDesktop()) {
+    return Promise.reject(
+      new Error(
+        "Moa storage is available in the Tauri desktop app. Run npm.cmd run tauri dev to use the local vault.",
+      ),
+    );
+  }
+
+  return invoke<T>(command, args);
+}
+
+function isTauriDesktop() {
+  return (
+    typeof window !== "undefined" &&
+    Boolean((window as TauriWindow).__TAURI_INTERNALS__)
+  );
 }
