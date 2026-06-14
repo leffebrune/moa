@@ -1,6 +1,6 @@
 <script lang="ts">
   import MarkdownIt from "markdown-it";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     createDocument,
     deleteDocument,
@@ -17,6 +17,7 @@
     type StorageStatus,
     type VaultSummary,
   } from "./storage";
+  import { TEXT } from "./text";
 
   type ViewMode = "view" | "edit";
   type PanelMode = "documents" | "settings";
@@ -47,14 +48,14 @@
   let isDeleting = false;
   let isRebuilding = false;
   let searchQuery = "";
+  let isSearchDetailsOpen = false;
   let searchSort: SearchSort = "relevance";
-  let categoryFilter = "";
   let tagFilter = "";
   let settingVaultPath = "";
   let draftTitle = "";
-  let draftCategory = "";
   let draftTags = "";
   let draftBody = "";
+  let editorTextarea: HTMLTextAreaElement | null = null;
   let lastSavedSnapshot = "";
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -64,20 +65,12 @@
   $: draftSnapshot = activeDocument
     ? JSON.stringify({
         title: draftTitle.trim(),
-        category: draftCategory.trim(),
         tags: parseTags(draftTags),
         body: draftBody,
       })
     : "";
   $: hasUnsavedChanges =
     Boolean(activeDocument) && draftSnapshot !== lastSavedSnapshot;
-  $: categories = Array.from(
-    new Set(
-      documents
-        .map((document) => document.category?.trim())
-        .filter((category): category is string => Boolean(category)),
-    ),
-  ).sort((a, b) => a.localeCompare(b));
   $: tags = Array.from(new Set(documents.flatMap((document) => document.tags))).sort(
     (a, b) => a.localeCompare(b),
   );
@@ -119,14 +112,12 @@
   async function refreshDocuments(nextSelectedId = selectedId) {
     const serial = ++requestSerial;
     const query = searchQuery.trim();
-    const category = emptyToNull(categoryFilter);
     const tag = emptyToNull(tagFilter);
 
     try {
       if (query) {
         const results = await searchDocuments({
           query,
-          category,
           tags: tag ? [tag] : null,
           sort: searchSort === "updatedAt" ? "updatedAt" : null,
         });
@@ -136,7 +127,6 @@
         documents = results.map(searchResultToListItem);
       } else {
         const items = await listDocuments({
-          category,
           tag,
           query: null,
         });
@@ -185,14 +175,13 @@
 
     try {
       const document = await createDocument({
-        title: "Untitled",
-        category: emptyToNull(categoryFilter),
+        title: TEXT.defaults.newDocumentTitle,
         tags: tagFilter ? [tagFilter] : [],
-        body: "# Untitled\n\nStart writing here.",
+        body: TEXT.defaults.newDocumentBody,
       });
       await refreshDocuments(document.id);
       await openDocument(document.id, "edit");
-      message = "Document created.";
+      message = TEXT.messages.documentCreated;
     } catch (err) {
       error = formatError(err);
     }
@@ -204,7 +193,7 @@
     }
 
     const title = activeDocument.title;
-    const confirmed = window.confirm(`Move "${title}" to the local trash?`);
+    const confirmed = window.confirm(TEXT.confirm.moveToTrash(title));
     if (!confirmed) {
       return;
     }
@@ -222,7 +211,7 @@
       if (documents[0]) {
         await openDocument(documents[0].id, "view");
       }
-      message = "Document moved to trash.";
+      message = TEXT.messages.documentMovedToTrash;
     } catch (err) {
       error = formatError(err);
     } finally {
@@ -232,12 +221,10 @@
 
   function loadDraft(document: DocumentPayload) {
     draftTitle = document.title;
-    draftCategory = document.category ?? "";
     draftTags = document.tags.join(", ");
     draftBody = document.body;
     lastSavedSnapshot = JSON.stringify({
       title: draftTitle.trim(),
-      category: draftCategory.trim(),
       tags: parseTags(draftTags),
       body: draftBody,
     });
@@ -275,8 +262,7 @@
     saveState = "saving";
     error = "";
 
-    const title = draftTitle.trim() || "Untitled";
-    const category = emptyToNull(draftCategory);
+    const title = draftTitle.trim() || TEXT.defaults.newDocumentTitle;
     const tags = parseTags(draftTags);
     const body = draftBody;
 
@@ -284,20 +270,18 @@
       const result = await saveDocument({
         id: activeDocument.id,
         title,
-        category,
         tags,
         body,
       });
       activeDocument = {
         ...activeDocument,
         title,
-        category,
         tags,
         body,
         updatedAt: result.updatedAt,
         relativePath: result.relativePath,
       };
-      lastSavedSnapshot = JSON.stringify({ title, category: category ?? "", tags, body });
+      lastSavedSnapshot = JSON.stringify({ title, tags, body });
       saveState = "saved";
       await refreshDocuments(activeDocument.id);
       status = await getStorageStatus();
@@ -318,7 +302,6 @@
 
   async function clearFilters() {
     searchQuery = "";
-    categoryFilter = "";
     tagFilter = "";
     await refreshDocuments();
   }
@@ -328,13 +311,54 @@
     if (activeDocument) {
       activeDocument = {
         ...activeDocument,
-        title: draftTitle.trim() || "Untitled",
-        category: emptyToNull(draftCategory),
+        title: draftTitle.trim() || TEXT.defaults.newDocumentTitle,
         tags: parseTags(draftTags),
         body: draftBody,
       };
     }
     viewMode = "view";
+  }
+
+  async function enterEditMode() {
+    if (!activeDocument) {
+      return;
+    }
+
+    viewMode = "edit";
+    await tick();
+    editorTextarea?.focus();
+  }
+
+  function handleKeyboardShortcut(event: KeyboardEvent) {
+    if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+
+    if (event.key === "Enter" && viewMode === "view" && activeDocument && !isEditableTarget(event.target)) {
+      event.preventDefault();
+      void enterEditMode();
+      return;
+    }
+
+    if (event.key === "Escape" && viewMode === "edit") {
+      event.preventDefault();
+      void enterViewMode();
+    }
+  }
+
+  function isEditableTarget(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    const tagName = target.tagName.toLowerCase();
+    return (
+      tagName === "input" ||
+      tagName === "textarea" ||
+      tagName === "select" ||
+      tagName === "button" ||
+      target.isContentEditable
+    );
   }
 
   async function rebuild() {
@@ -347,7 +371,7 @@
       await rebuildIndex();
       status = await getStorageStatus();
       await refreshDocuments(selectedId);
-      message = "Index rebuilt from Markdown files.";
+      message = TEXT.messages.indexRebuilt;
     } catch (err) {
       error = formatError(err);
     } finally {
@@ -372,7 +396,7 @@
       if (documents[0]) {
         await openDocument(documents[0].id, "view");
       }
-      message = "Vault loaded.";
+      message = TEXT.messages.vaultLoaded;
     } catch (err) {
       error = formatError(err);
     } finally {
@@ -384,7 +408,6 @@
     return {
       id: result.id,
       title: result.title,
-      category: result.category,
       tags: result.tags,
       relativePath: result.relativePath,
       createdAt: "",
@@ -435,120 +458,141 @@
   function saveLabel(state: SaveState) {
     switch (state) {
       case "dirty":
-        return "Unsaved";
+        return TEXT.saveState.dirty;
       case "saving":
-        return "Saving";
+        return TEXT.saveState.saving;
       case "saved":
-        return "Saved";
+        return TEXT.saveState.saved;
       case "error":
-        return "Save failed";
+        return TEXT.saveState.error;
       default:
-        return "Ready";
+        return TEXT.saveState.idle;
     }
+  }
+
+  function issueKindLabel(kind: string) {
+    return TEXT.issueKinds[kind as keyof typeof TEXT.issueKinds] ?? kind;
   }
 </script>
 
 <svelte:window
+  on:keydown={handleKeyboardShortcut}
   on:beforeunload={() => {
     void flushSave();
   }}
 />
 
 <main class="workspace">
-  <aside class="library-panel" aria-label="Library">
+  <aside class="library-panel" aria-label={TEXT.aria.library}>
     <header class="app-header">
       <div>
-        <p class="eyebrow">Moa</p>
-        <h1>Local notes</h1>
+        <p class="eyebrow">{TEXT.app.brand}</p>
+        <h1>{TEXT.app.title}</h1>
       </div>
-      <button class="icon-button primary" type="button" on:click={createNewDocument} title="New document">
+      <button
+        class="icon-button primary"
+        type="button"
+        on:click={createNewDocument}
+        title={TEXT.actions.newDocument}
+      >
         +
       </button>
     </header>
 
-    <div class="panel-switch" aria-label="Panel">
+    <div class="panel-switch" aria-label={TEXT.aria.panel}>
       <button
         type="button"
         class:active={panelMode === "documents"}
         on:click={() => (panelMode = "documents")}
       >
-        Documents
+        {TEXT.labels.panelDocuments}
       </button>
       <button
         type="button"
         class:active={panelMode === "settings"}
         on:click={() => (panelMode = "settings")}
       >
-        Settings
+        {TEXT.labels.panelSettings}
       </button>
     </div>
 
     {#if panelMode === "documents"}
-      <section class="search-panel" aria-label="Search and filters">
-        <label>
-          <span>Search</span>
-          <input
-            type="search"
-            placeholder="Title, body, category, tags"
-            bind:value={searchQuery}
-            on:input={queueSearchRefresh}
-          />
-        </label>
-
-        <div class="filter-grid">
-          <label>
-            <span>Category</span>
-            <input
-              list="category-options"
-              placeholder="All"
-              bind:value={categoryFilter}
-              on:input={queueSearchRefresh}
-            />
-          </label>
-          <label>
-            <span>Tag</span>
-            <input
-              list="tag-options"
-              placeholder="All"
-              bind:value={tagFilter}
-              on:input={queueSearchRefresh}
-            />
-          </label>
+      <section class="search-panel" aria-label={TEXT.aria.searchAndFilters}>
+        <div class="search-header">
+          <div class="search-field">
+            <label for="document-search">{TEXT.labels.search}</label>
+            <div class="search-control">
+              <input
+                id="document-search"
+                type="search"
+                placeholder={TEXT.placeholders.search}
+                bind:value={searchQuery}
+                on:input={queueSearchRefresh}
+              />
+              <button
+                class="search-detail-button"
+                type="button"
+                aria-label={isSearchDetailsOpen ? TEXT.aria.hideSearchDetails : TEXT.aria.showSearchDetails}
+                aria-expanded={isSearchDetailsOpen}
+                on:click={() => (isSearchDetailsOpen = !isSearchDetailsOpen)}
+              >
+                {isSearchDetailsOpen ? TEXT.state.detailsOpen : TEXT.state.detailsClosed}
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div class="sort-switch" aria-label="Search sort">
-          <button
-            type="button"
-            class:active={searchSort === "relevance"}
-            on:click={() => {
-              searchSort = "relevance";
-              void refreshDocuments();
-            }}
-          >
-            Relevance
-          </button>
-          <button
-            type="button"
-            class:active={searchSort === "updatedAt"}
-            on:click={() => {
-              searchSort = "updatedAt";
-              void refreshDocuments();
-            }}
-          >
-            Modified
-          </button>
-        </div>
+        {#if isSearchDetailsOpen}
+          <div class="search-details">
+            <div class="filter-grid">
+              <label>
+                <span>{TEXT.labels.tag}</span>
+                <input
+                  list="tag-options"
+                  placeholder={TEXT.placeholders.all}
+                  bind:value={tagFilter}
+                  on:input={queueSearchRefresh}
+                />
+              </label>
+            </div>
 
-        <button class="text-button" type="button" on:click={clearFilters}>Clear filters</button>
+            <div class="sort-switch" aria-label={TEXT.aria.searchSort}>
+              <button
+                type="button"
+                class:active={searchSort === "relevance"}
+                on:click={() => {
+                  searchSort = "relevance";
+                  void refreshDocuments();
+                }}
+              >
+                {TEXT.labels.relevance}
+              </button>
+              <button
+                type="button"
+                class:active={searchSort === "updatedAt"}
+                on:click={() => {
+                  searchSort = "updatedAt";
+                  void refreshDocuments();
+                }}
+              >
+                {TEXT.labels.modified}
+              </button>
+            </div>
+
+            <button class="text-button" type="button" on:click={clearFilters}>
+              {TEXT.actions.clearFilters}
+            </button>
+          </div>
+        {/if}
       </section>
 
-      <section class="document-list" aria-label="Documents">
+      <section class="document-list" aria-label={TEXT.labels.documents}>
         {#if isLoading}
-          <p class="muted">Loading vault...</p>
+          <p class="muted">{TEXT.state.loadingVault}</p>
         {:else if filteredDocuments.length === 0}
           <div class="empty-state">
-            <strong>No documents</strong>
-            <span>Create a note or clear the current filters.</span>
+            <strong>{TEXT.empty.documentListTitle}</strong>
+            <span>{TEXT.empty.documentListBody}</span>
           </div>
         {:else}
           {#each filteredDocuments as document}
@@ -558,12 +602,9 @@
               on:click={() => openDocument(document.id)}
             >
               <span class="document-title">{document.title}</span>
-              <span class="document-meta">
-                {document.category ?? "Uncategorized"}
-                {#if document.tags.length > 0}
-                  / {document.tags.join(", ")}
-                {/if}
-              </span>
+              {#if document.tags.length > 0}
+                <span class="document-meta">{document.tags.join(", ")}</span>
+              {/if}
               <span class="document-date">{formatDate(document.updatedAt)}</span>
               {#if document.snippet}
                 <span class="document-snippet">{document.snippet}</span>
@@ -573,33 +614,33 @@
         {/if}
       </section>
     {:else}
-      <section class="settings-panel" aria-label="Settings">
+      <section class="settings-panel" aria-label={TEXT.labels.panelSettings}>
         <div>
-          <span class="setting-label">Vault</span>
+          <span class="setting-label">{TEXT.labels.vault}</span>
           <label class="path-field">
-            <span class="sr-only">Vault path</span>
-            <input bind:value={settingVaultPath} placeholder="Vault path" />
+            <span class="sr-only">{TEXT.aria.vaultPath}</span>
+            <input bind:value={settingVaultPath} placeholder={TEXT.placeholders.vaultPath} />
           </label>
         </div>
         <div>
-          <span class="setting-label">Notes</span>
-          <strong>{vault?.notesPath ?? "-"}</strong>
+          <span class="setting-label">{TEXT.labels.notes}</span>
+          <strong>{vault?.notesPath ?? TEXT.state.notAvailable}</strong>
         </div>
         <div>
-          <span class="setting-label">SQLite index</span>
-          <strong>{vault?.databasePath ?? "-"}</strong>
+          <span class="setting-label">{TEXT.labels.sqliteIndex}</span>
+          <strong>{vault?.databasePath ?? TEXT.state.notAvailable}</strong>
         </div>
         <div class="stats-grid">
-          <span>{status?.documentCount ?? 0}<small>Documents</small></span>
-          <span>{status?.tagCount ?? 0}<small>Tags</small></span>
-          <span>{status?.issueCount ?? 0}<small>Issues</small></span>
+          <span>{status?.documentCount ?? 0}<small>{TEXT.labels.documents}</small></span>
+          <span>{status?.tagCount ?? 0}<small>{TEXT.labels.tags}</small></span>
+          <span>{status?.issueCount ?? 0}<small>{TEXT.labels.issues}</small></span>
         </div>
         <div class="settings-actions">
           <button class="wide-button" type="button" disabled={isLoading} on:click={switchVault}>
-            {isLoading ? "Loading..." : "Use vault"}
+            {isLoading ? TEXT.state.loading : TEXT.actions.useVault}
           </button>
           <button class="wide-button secondary" type="button" disabled={isRebuilding} on:click={rebuild}>
-            {isRebuilding ? "Rebuilding..." : "Rebuild index"}
+            {isRebuilding ? TEXT.state.rebuilding : TEXT.actions.rebuildIndex}
           </button>
         </div>
 
@@ -607,7 +648,7 @@
           <div class="issue-list">
             {#each status.issues as issue}
               <p>
-                <strong>{issue.kind}</strong>
+                <strong>{issueKindLabel(issue.kind)}</strong>
                 <span>{issue.relativePath ?? ""}</span>
                 {issue.message}
               </p>
@@ -618,7 +659,7 @@
     {/if}
   </aside>
 
-  <section class="document-panel" aria-label="Document">
+  <section class="document-panel" aria-label={TEXT.aria.document}>
     {#if error}
       <div class="alert error">{error}</div>
     {:else if message}
@@ -627,20 +668,20 @@
 
     {#if activeDocument}
       <header class="document-toolbar">
-        <div class="mode-switch" aria-label="Mode">
+        <div class="mode-switch" aria-label={TEXT.aria.mode}>
           <button
             type="button"
             class:active={viewMode === "view"}
             on:click={enterViewMode}
           >
-            View
+            {TEXT.labels.viewRead}
           </button>
           <button
             type="button"
             class:active={viewMode === "edit"}
-            on:click={() => (viewMode = "edit")}
+            on:click={enterEditMode}
           >
-            Edit
+            {TEXT.labels.viewEdit}
           </button>
         </div>
         <div class="toolbar-actions">
@@ -648,30 +689,26 @@
             {saveLabel(saveState)}
           </span>
           <button type="button" on:click={flushSave} disabled={!hasUnsavedChanges || saveState === "saving"}>
-            Save now
+            {TEXT.actions.saveNow}
           </button>
           <button class="danger" type="button" disabled={isDeleting} on:click={deleteActiveDocument}>
-            Delete
+            {TEXT.actions.delete}
           </button>
         </div>
       </header>
 
       {#if viewMode === "edit"}
-        <section class="editor-layout" aria-label="Editor">
+        <section class="editor-layout" aria-label={TEXT.aria.editor}>
           <div class="metadata-grid">
             <label>
-              <span>Title</span>
+              <span>{TEXT.labels.title}</span>
               <input bind:value={draftTitle} on:input={markDirty} />
             </label>
-            <label>
-              <span>Category</span>
-              <input list="category-options" bind:value={draftCategory} on:input={markDirty} />
-            </label>
             <label class="wide-field">
-              <span>Tags</span>
+              <span>{TEXT.labels.tags}</span>
               <input
                 list="tag-options"
-                placeholder="comma, separated, tags"
+                placeholder={TEXT.placeholders.tags}
                 bind:value={draftTags}
                 on:input={markDirty}
               />
@@ -679,7 +716,8 @@
           </div>
 
           <textarea
-            aria-label="Markdown source"
+            bind:this={editorTextarea}
+            aria-label={TEXT.aria.markdownSource}
             spellcheck="true"
             bind:value={draftBody}
             on:input={markDirty}
@@ -690,7 +728,6 @@
           <header>
             <h2>{activeDocument.title}</h2>
             <div class="reader-meta">
-              <span>{activeDocument.category ?? "Uncategorized"}</span>
               <span>{formatDate(activeDocument.updatedAt)}</span>
               <span>{activeDocument.relativePath}</span>
             </div>
@@ -716,19 +753,13 @@
       {/if}
     {:else}
       <section class="empty-document">
-        <h2>No document selected</h2>
-        <p>Create a new Markdown document or choose one from the list.</p>
-        <button type="button" on:click={createNewDocument}>New document</button>
+        <h2>{TEXT.empty.documentPanelTitle}</h2>
+        <p>{TEXT.empty.documentPanelBody}</p>
+        <button type="button" on:click={createNewDocument}>{TEXT.actions.newDocument}</button>
       </section>
     {/if}
   </section>
 </main>
-
-<datalist id="category-options">
-  {#each categories as category}
-    <option value={category}></option>
-  {/each}
-</datalist>
 
 <datalist id="tag-options">
   {#each tags as tag}

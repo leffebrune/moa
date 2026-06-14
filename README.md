@@ -19,7 +19,7 @@ repository sibling named `moa-manual-vault`.
 
 ```powershell
 npm.cmd run storage -- init
-npm.cmd run storage -- create --title "Test note" --category project --tags "markdown,local" --body "Searchable body."
+npm.cmd run storage -- create --title "Test note" --tags "markdown,local" --body "Searchable body."
 npm.cmd run storage -- list
 npm.cmd run storage -- search --query "body"
 ```

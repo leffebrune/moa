@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "dev:web": "vite dev --host 127.0.0.1",
+    "dev:tauri": "tauri dev",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
+    "test": "npm run check && npm run test:rust",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "storage": "cargo run --manifest-path src-tauri/Cargo.toml --features storage-dev --bin storage_dev --",
     "tauri": "tauri"
   },

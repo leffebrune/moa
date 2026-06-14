@@ -32,7 +32,6 @@ fn run() -> Result<(), String> {
             let vault = vault_path(&flags)?;
             let input = CreateDocumentInput {
                 title: optional_flag(&flags, "title"),
-                category: optional_flag(&flags, "category"),
                 tags: optional_csv_flag(&flags, "tags"),
                 body: optional_flag(&flags, "body"),
             };
@@ -41,7 +40,6 @@ fn run() -> Result<(), String> {
         "list" => {
             let vault = vault_path(&flags)?;
             let filter = DocumentFilter {
-                category: optional_flag(&flags, "category"),
                 tag: optional_flag(&flags, "tag"),
                 query: optional_flag(&flags, "query"),
             };
@@ -57,7 +55,6 @@ fn run() -> Result<(), String> {
             let input = SaveDocumentInput {
                 id: required_flag(&flags, "id")?,
                 title: required_flag(&flags, "title")?,
-                category: optional_flag(&flags, "category"),
                 tags: optional_csv_flag(&flags, "tags").unwrap_or_default(),
                 body: required_flag(&flags, "body")?,
             };
@@ -67,7 +64,6 @@ fn run() -> Result<(), String> {
             let vault = vault_path(&flags)?;
             let input = SearchInput {
                 query: required_flag(&flags, "query")?,
-                category: optional_flag(&flags, "category"),
                 tags: optional_csv_flag(&flags, "tags"),
                 sort: optional_flag(&flags, "sort"),
             };
@@ -178,11 +174,11 @@ fn print_usage() {
     eprintln!(
         r#"Usage:
   cargo run --bin storage_dev -- init
-  cargo run --bin storage_dev -- create --title <title> [--category <category>] [--tags <a,b>] [--body <body>]
-  cargo run --bin storage_dev -- list [--category <category>] [--tag <tag>] [--query <query>]
+  cargo run --bin storage_dev -- create --title <title> [--tags <a,b>] [--body <body>]
+  cargo run --bin storage_dev -- list [--tag <tag>] [--query <query>]
   cargo run --bin storage_dev -- read --id <document-id>
-  cargo run --bin storage_dev -- save --id <document-id> --title <title> [--category <category>] [--tags <a,b>] --body <body>
-  cargo run --bin storage_dev -- search --query <query> [--category <category>] [--tags <a,b>] [--sort updatedAt]
+  cargo run --bin storage_dev -- save --id <document-id> --title <title> [--tags <a,b>] --body <body>
+  cargo run --bin storage_dev -- search --query <query> [--tags <a,b>] [--sort updatedAt]
   cargo run --bin storage_dev -- delete --id <document-id>
   cargo run --bin storage_dev -- rebuild
   cargo run --bin storage_dev -- status

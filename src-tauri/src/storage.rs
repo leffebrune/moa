@@ -26,7 +26,7 @@ impl AppState {
         let mut active = self
             .active_vault
             .lock()
-            .map_err(|_| "storage state lock poisoned".to_string())?;
+            .map_err(|_| "저장소 상태 잠금이 손상되었습니다".to_string())?;
         *active = Some(path);
         Ok(())
     }
@@ -34,9 +34,9 @@ impl AppState {
     fn active_vault(&self) -> Result<PathBuf, String> {
         self.active_vault
             .lock()
-            .map_err(|_| "storage state lock poisoned".to_string())?
+            .map_err(|_| "저장소 상태 잠금이 손상되었습니다".to_string())?
             .clone()
-            .ok_or_else(|| "vault is not initialized".to_string())
+            .ok_or_else(|| "보관함이 초기화되지 않았습니다".to_string())
     }
 }
 
@@ -76,7 +76,6 @@ pub struct VaultSummary {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentFilter {
-    pub category: Option<String>,
     pub tag: Option<String>,
     pub query: Option<String>,
 }
@@ -86,7 +85,6 @@ pub struct DocumentFilter {
 pub struct DocumentListItem {
     pub id: String,
     pub title: String,
-    pub category: Option<String>,
     pub tags: Vec<String>,
     pub relative_path: String,
     pub created_at: String,
@@ -99,7 +97,6 @@ pub struct DocumentListItem {
 pub struct DocumentPayload {
     pub id: String,
     pub title: String,
-    pub category: Option<String>,
     pub tags: Vec<String>,
     pub body: String,
     pub relative_path: String,
@@ -111,7 +108,6 @@ pub struct DocumentPayload {
 #[serde(rename_all = "camelCase")]
 pub struct CreateDocumentInput {
     pub title: Option<String>,
-    pub category: Option<String>,
     pub tags: Option<Vec<String>>,
     pub body: Option<String>,
 }
@@ -121,7 +117,6 @@ pub struct CreateDocumentInput {
 pub struct SaveDocumentInput {
     pub id: String,
     pub title: String,
-    pub category: Option<String>,
     pub tags: Vec<String>,
     pub body: String,
 }
@@ -145,7 +140,6 @@ pub struct DeleteResult {
 #[serde(rename_all = "camelCase")]
 pub struct SearchInput {
     pub query: String,
-    pub category: Option<String>,
     pub tags: Option<Vec<String>>,
     pub sort: Option<String>,
 }
@@ -155,7 +149,6 @@ pub struct SearchInput {
 pub struct SearchResult {
     pub id: String,
     pub title: String,
-    pub category: Option<String>,
     pub tags: Vec<String>,
     pub relative_path: String,
     pub updated_at: String,
@@ -187,7 +180,6 @@ pub struct StorageStatus {
 struct Frontmatter {
     id: String,
     title: String,
-    category: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
     created_at: String,
@@ -213,15 +205,15 @@ pub fn read_global_settings(config_dir: &Path) -> Result<Option<GlobalSettings>,
     }
 
     let content = fs::read_to_string(&path)
-        .map_err(|err| format!("failed to read global settings: {err}"))?;
+        .map_err(|err| format!("전역 설정을 읽지 못했습니다: {err}"))?;
     serde_json::from_str(&content)
         .map(Some)
-        .map_err(|err| format!("failed to parse global settings: {err}"))
+        .map_err(|err| format!("전역 설정을 해석하지 못했습니다: {err}"))
 }
 
 pub fn save_global_settings(config_dir: &Path, vault_path: &Path) -> Result<(), String> {
     fs::create_dir_all(config_dir)
-        .map_err(|err| format!("failed to create app config directory: {err}"))?;
+        .map_err(|err| format!("앱 설정 디렉터리를 만들지 못했습니다: {err}"))?;
 
     let vault_path_string = path_to_string(vault_path);
     let mut recent = read_global_settings(config_dir)?
@@ -236,9 +228,9 @@ pub fn save_global_settings(config_dir: &Path, vault_path: &Path) -> Result<(), 
         recent_vault_paths: recent,
     };
     let content = serde_json::to_string_pretty(&settings)
-        .map_err(|err| format!("failed to serialize global settings: {err}"))?;
+        .map_err(|err| format!("전역 설정을 직렬화하지 못했습니다: {err}"))?;
     fs::write(config_dir.join(VAULT_SETTINGS_FILE), content)
-        .map_err(|err| format!("failed to write global settings: {err}"))
+        .map_err(|err| format!("전역 설정을 쓰지 못했습니다: {err}"))
 }
 
 pub fn initialize_vault_at(vault_path: PathBuf) -> Result<VaultSummary, String> {
@@ -265,59 +257,45 @@ pub fn list_documents_in_vault(
     let conn = open_ready_database(vault_path)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, category, relative_path, created_at, updated_at, content_hash
+            "SELECT id, title, relative_path, created_at, updated_at, content_hash
              FROM documents
              ORDER BY updated_at DESC, title ASC",
         )
-        .map_err(|err| format!("failed to prepare document list: {err}"))?;
+        .map_err(|err| format!("문서 목록을 준비하지 못했습니다: {err}"))?;
 
     let rows = stmt
         .query_map([], |row| {
             Ok(DocumentListItem {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                category: row.get(2)?,
-                relative_path: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                content_hash: row.get(6)?,
+                relative_path: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                content_hash: row.get(5)?,
                 tags: Vec::new(),
             })
         })
-        .map_err(|err| format!("failed to query documents: {err}"))?;
+        .map_err(|err| format!("문서를 조회하지 못했습니다: {err}"))?;
 
     let filter = filter.unwrap_or(DocumentFilter {
-        category: None,
         tag: None,
         query: None,
     });
-    let category_filter = normalize_optional_string(filter.category);
     let tag_filter = normalize_optional_string(filter.tag).map(normalize_tag);
     let query_filter = normalize_optional_string(filter.query).map(|query| query.to_lowercase());
 
     let mut documents = Vec::new();
     for row in rows {
-        let mut item = row.map_err(|err| format!("failed to read document row: {err}"))?;
+        let mut item = row.map_err(|err| format!("문서 행을 읽지 못했습니다: {err}"))?;
         item.tags = load_tags(&conn, &item.id)?;
 
-        if let Some(category) = &category_filter {
-            if item.category.as_deref() != Some(category.as_str()) {
-                continue;
-            }
-        }
         if let Some(tag) = &tag_filter {
             if !item.tags.iter().any(|candidate| candidate == tag) {
                 continue;
             }
         }
         if let Some(query) = &query_filter {
-            let haystack = format!(
-                "{} {} {}",
-                item.title,
-                item.category.clone().unwrap_or_default(),
-                item.tags.join(" ")
-            )
-            .to_lowercase();
+            let haystack = format!("{} {}", item.title, item.tags.join(" ")).to_lowercase();
             if !haystack.contains(query) {
                 continue;
             }
@@ -338,19 +316,18 @@ pub fn read_document_in_vault(vault_path: &Path, id: &str) -> Result<DocumentPay
             |row| row.get(0),
         )
         .optional()
-        .map_err(|err| format!("failed to query document path: {err}"))?
-        .ok_or_else(|| format!("document not found: {id}"))?;
+        .map_err(|err| format!("문서 경로를 조회하지 못했습니다: {err}"))?
+        .ok_or_else(|| format!("문서를 찾을 수 없습니다: {id}"))?;
 
     let path = resolve_vault_relative_path(vault_path, &relative_path)?;
     let content =
-        fs::read_to_string(&path).map_err(|err| format!("failed to read document: {err}"))?;
+        fs::read_to_string(&path).map_err(|err| format!("문서를 읽지 못했습니다: {err}"))?;
     let parsed = parse_markdown_document(&content)
-        .map_err(|err| format!("failed to parse {relative_path}: {err}"))?;
+        .map_err(|err| format!("{relative_path} 파일을 해석하지 못했습니다: {err}"))?;
 
     Ok(DocumentPayload {
         id: parsed.meta.id,
         title: parsed.meta.title,
-        category: parsed.meta.category,
         tags: parsed.meta.tags,
         body: parsed.body,
         relative_path,
@@ -366,7 +343,6 @@ pub fn create_document_in_vault(
     ensure_vault_dirs(vault_path)?;
     let now = Local::now().to_rfc3339();
     let title = normalize_title(input.title);
-    let category = normalize_optional_string(input.category);
     let tags = normalize_tags(input.tags.unwrap_or_default());
     let body = input.body.unwrap_or_default();
     let id = Uuid::new_v4().to_string();
@@ -377,7 +353,6 @@ pub fn create_document_in_vault(
         meta: Frontmatter {
             id: id.clone(),
             title,
-            category,
             tags,
             created_at: now.clone(),
             updated_at: now,
@@ -402,7 +377,6 @@ pub fn save_document_in_vault(
         meta: Frontmatter {
             id: existing.id.clone(),
             title: normalize_title(Some(input.title)),
-            category: normalize_optional_string(input.category),
             tags: normalize_tags(input.tags),
             created_at: existing.created_at,
             updated_at: updated_at.clone(),
@@ -426,26 +400,26 @@ pub fn delete_document_in_vault(vault_path: &Path, id: &str) -> Result<DeleteRes
     let existing = read_document_in_vault(vault_path, id)?;
     let source_path = resolve_vault_relative_path(vault_path, &existing.relative_path)?;
     fs::create_dir_all(trash_path(vault_path))
-        .map_err(|err| format!("failed to create trash directory: {err}"))?;
+        .map_err(|err| format!("휴지통 디렉터리를 만들지 못했습니다: {err}"))?;
 
     let file_name = source_path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| "document path has no valid file name".to_string())?;
+        .ok_or_else(|| "문서 경로에 올바른 파일명이 없습니다".to_string())?;
     let stamp = Utc::now().format("%Y-%m-%dT%H%M%SZ");
     let trash_file_name = format!("{stamp}_{id}_{file_name}");
     let trash_path = unique_path(trash_path(vault_path).join(trash_file_name));
     fs::rename(&source_path, &trash_path)
-        .map_err(|err| format!("failed to move document to trash: {err}"))?;
+        .map_err(|err| format!("문서를 휴지통으로 이동하지 못했습니다: {err}"))?;
 
     let conn = open_ready_database(vault_path)?;
     conn.execute(
         "DELETE FROM documents_fts WHERE document_id = ?1",
         params![id],
     )
-    .map_err(|err| format!("failed to remove FTS index: {err}"))?;
+    .map_err(|err| format!("FTS 인덱스를 제거하지 못했습니다: {err}"))?;
     conn.execute("DELETE FROM documents WHERE id = ?1", params![id])
-        .map_err(|err| format!("failed to remove document metadata: {err}"))?;
+        .map_err(|err| format!("문서 메타데이터를 제거하지 못했습니다: {err}"))?;
 
     Ok(DeleteResult {
         id: id.to_string(),
@@ -462,7 +436,6 @@ pub fn search_documents_in_vault(
         return Ok(list_documents_in_vault(
             vault_path,
             Some(DocumentFilter {
-                category: input.category,
                 tag: input.tags.and_then(|tags| tags.into_iter().next()),
                 query: None,
             }),
@@ -471,7 +444,6 @@ pub fn search_documents_in_vault(
         .map(|item| SearchResult {
             id: item.id,
             title: item.title,
-            category: item.category,
             tags: item.tags,
             relative_path: item.relative_path,
             updated_at: item.updated_at,
@@ -486,7 +458,6 @@ pub fn search_documents_in_vault(
         .prepare(
             "SELECT d.id,
                     d.title,
-                    d.category,
                     d.relative_path,
                     d.updated_at,
                     snippet(documents_fts, 2, '', '', '...', 16) AS snippet,
@@ -497,35 +468,28 @@ pub fn search_documents_in_vault(
              ORDER BY score ASC
              LIMIT 100",
         )
-        .map_err(|err| format!("failed to prepare search: {err}"))?;
+        .map_err(|err| format!("검색을 준비하지 못했습니다: {err}"))?;
 
     let rows = stmt
         .query_map(params![query], |row| {
             Ok(SearchResult {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                category: row.get(2)?,
-                relative_path: row.get(3)?,
-                updated_at: row.get(4)?,
-                snippet: row.get(5)?,
-                score: row.get(6)?,
+                relative_path: row.get(2)?,
+                updated_at: row.get(3)?,
+                snippet: row.get(4)?,
+                score: row.get(5)?,
                 tags: Vec::new(),
             })
         })
-        .map_err(|err| format!("failed to search documents: {err}"))?;
+        .map_err(|err| format!("문서를 검색하지 못했습니다: {err}"))?;
 
-    let category_filter = normalize_optional_string(input.category);
     let tag_filters = normalize_tags(input.tags.unwrap_or_default());
     let mut results = Vec::new();
 
     for row in rows {
-        let mut result = row.map_err(|err| format!("failed to read search row: {err}"))?;
+        let mut result = row.map_err(|err| format!("검색 결과 행을 읽지 못했습니다: {err}"))?;
         result.tags = load_tags(&conn, &result.id)?;
-        if let Some(category) = &category_filter {
-            if result.category.as_deref() != Some(category.as_str()) {
-                continue;
-            }
-        }
         if !tag_filters.is_empty()
             && !tag_filters
                 .iter()
@@ -551,9 +515,9 @@ pub fn rebuild_index_at(vault_path: &Path) -> Result<IndexStatus, String> {
     let mut issues = Vec::new();
 
     let entries = fs::read_dir(notes_path(vault_path))
-        .map_err(|err| format!("failed to read notes directory: {err}"))?;
+        .map_err(|err| format!("노트 디렉터리를 읽지 못했습니다: {err}"))?;
     for entry in entries {
-        let entry = entry.map_err(|err| format!("failed to read notes entry: {err}"))?;
+        let entry = entry.map_err(|err| format!("노트 항목을 읽지 못했습니다: {err}"))?;
         let path = entry.path();
         if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
             continue;
@@ -563,7 +527,7 @@ pub fn rebuild_index_at(vault_path: &Path) -> Result<IndexStatus, String> {
             "{NOTES_DIR}/{}",
             path.file_name()
                 .and_then(|name| name.to_str())
-                .ok_or_else(|| "note file has invalid UTF-8 name".to_string())?
+                .ok_or_else(|| "노트 파일명이 올바른 UTF-8이 아닙니다".to_string())?
         );
 
         match read_indexed_document(vault_path, &relative_path) {
@@ -571,7 +535,7 @@ pub fn rebuild_index_at(vault_path: &Path) -> Result<IndexStatus, String> {
                 if !seen_ids.insert(document.item.id.clone()) {
                     issues.push(StorageIssue {
                         kind: "duplicateDocumentId".to_string(),
-                        message: format!("duplicate document id: {}", document.item.id),
+                        message: format!("중복된 문서 ID: {}", document.item.id),
                         relative_path: Some(relative_path),
                     });
                     continue;
@@ -620,11 +584,11 @@ pub fn active_vault_path(state: &AppState) -> Result<PathBuf, String> {
 
 fn ensure_vault_dirs(vault_path: &Path) -> Result<(), String> {
     fs::create_dir_all(notes_path(vault_path))
-        .map_err(|err| format!("failed to create notes directory: {err}"))?;
+        .map_err(|err| format!("노트 디렉터리를 만들지 못했습니다: {err}"))?;
     fs::create_dir_all(moa_path(vault_path))
-        .map_err(|err| format!("failed to create .moa directory: {err}"))?;
+        .map_err(|err| format!(".moa 디렉터리를 만들지 못했습니다: {err}"))?;
     fs::create_dir_all(trash_path(vault_path))
-        .map_err(|err| format!("failed to create trash directory: {err}"))
+        .map_err(|err| format!("휴지통 디렉터리를 만들지 못했습니다: {err}"))
 }
 
 fn ensure_vault_settings(vault_path: &Path) -> Result<(), String> {
@@ -638,8 +602,8 @@ fn ensure_vault_settings(vault_path: &Path) -> Result<(), String> {
         created_at: Utc::now().to_rfc3339(),
     };
     let content = serde_json::to_string_pretty(&settings)
-        .map_err(|err| format!("failed to serialize vault settings: {err}"))?;
-    fs::write(path, content).map_err(|err| format!("failed to write vault settings: {err}"))
+        .map_err(|err| format!("보관함 설정을 직렬화하지 못했습니다: {err}"))?;
+    fs::write(path, content).map_err(|err| format!("보관함 설정을 쓰지 못했습니다: {err}"))
 }
 
 fn open_ready_database(vault_path: &Path) -> Result<Connection, String> {
@@ -650,7 +614,7 @@ fn open_ready_database(vault_path: &Path) -> Result<Connection, String> {
 
 fn open_database(vault_path: &Path) -> Result<Connection, String> {
     Connection::open(database_path(vault_path))
-        .map_err(|err| format!("failed to open database: {err}"))
+        .map_err(|err| format!("데이터베이스를 열지 못했습니다: {err}"))
 }
 
 fn initialize_schema(conn: &Connection) -> Result<(), String> {
@@ -667,7 +631,6 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
           id TEXT PRIMARY KEY,
           relative_path TEXT NOT NULL UNIQUE,
           title TEXT NOT NULL,
-          category TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           file_mtime INTEGER NOT NULL,
@@ -692,7 +655,6 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
           document_id UNINDEXED,
           title,
           body,
-          category,
           tags,
           tokenize = 'unicode61'
         );
@@ -701,7 +663,7 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
         VALUES (1, datetime('now'));
         ",
     )
-    .map_err(|err| format!("failed to initialize database schema: {err}"))
+    .map_err(|err| format!("데이터베이스 스키마를 초기화하지 못했습니다: {err}"))
 }
 
 fn read_indexed_document(
@@ -710,10 +672,10 @@ fn read_indexed_document(
 ) -> Result<IndexedDocument, String> {
     let full_path = resolve_vault_relative_path(vault_path, relative_path)?;
     let content = fs::read_to_string(&full_path)
-        .map_err(|err| format!("failed to read markdown file: {err}"))?;
+        .map_err(|err| format!("마크다운 파일을 읽지 못했습니다: {err}"))?;
     let parsed = parse_markdown_document(&content)?;
     let metadata = fs::metadata(&full_path)
-        .map_err(|err| format!("failed to read markdown metadata: {err}"))?;
+        .map_err(|err| format!("마크다운 메타데이터를 읽지 못했습니다: {err}"))?;
     let file_mtime = metadata
         .modified()
         .ok()
@@ -726,7 +688,6 @@ fn read_indexed_document(
         item: DocumentListItem {
             id: parsed.meta.id,
             title: parsed.meta.title,
-            category: parsed.meta.category,
             tags: parsed.meta.tags,
             relative_path: relative_path.to_string(),
             created_at: parsed.meta.created_at,
@@ -748,14 +709,13 @@ fn upsert_document(conn: &Connection, document: &IndexedDocument) -> Result<(), 
     let now = Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO documents (
-            id, relative_path, title, category, created_at, updated_at,
+            id, relative_path, title, created_at, updated_at,
             file_mtime, content_hash, last_indexed_at
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
             relative_path = excluded.relative_path,
             title = excluded.title,
-            category = excluded.category,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             file_mtime = excluded.file_mtime,
@@ -765,7 +725,6 @@ fn upsert_document(conn: &Connection, document: &IndexedDocument) -> Result<(), 
             document.item.id,
             document.item.relative_path,
             document.item.title,
-            document.item.category,
             document.item.created_at,
             document.item.updated_at,
             document.file_mtime,
@@ -773,49 +732,48 @@ fn upsert_document(conn: &Connection, document: &IndexedDocument) -> Result<(), 
             now
         ],
     )
-    .map_err(|err| format!("failed to upsert document: {err}"))?;
+    .map_err(|err| format!("문서를 갱신하지 못했습니다: {err}"))?;
 
     conn.execute(
         "DELETE FROM document_tags WHERE document_id = ?1",
         params![document.item.id],
     )
-    .map_err(|err| format!("failed to clear document tags: {err}"))?;
+    .map_err(|err| format!("문서 태그를 지우지 못했습니다: {err}"))?;
 
     for tag in &document.item.tags {
         conn.execute(
             "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
             params![tag],
         )
-        .map_err(|err| format!("failed to upsert tag: {err}"))?;
+            .map_err(|err| format!("태그를 갱신하지 못했습니다: {err}"))?;
         let tag_id: i64 = conn
             .query_row("SELECT id FROM tags WHERE name = ?1", params![tag], |row| {
                 row.get(0)
             })
-            .map_err(|err| format!("failed to load tag id: {err}"))?;
+        .map_err(|err| format!("태그 ID를 불러오지 못했습니다: {err}"))?;
         conn.execute(
             "INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES (?1, ?2)",
             params![document.item.id, tag_id],
         )
-        .map_err(|err| format!("failed to link document tag: {err}"))?;
+        .map_err(|err| format!("문서 태그를 연결하지 못했습니다: {err}"))?;
     }
 
     conn.execute(
         "DELETE FROM documents_fts WHERE document_id = ?1",
         params![document.item.id],
     )
-    .map_err(|err| format!("failed to clear FTS row: {err}"))?;
+    .map_err(|err| format!("FTS 행을 지우지 못했습니다: {err}"))?;
     conn.execute(
-        "INSERT INTO documents_fts (document_id, title, body, category, tags)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO documents_fts (document_id, title, body, tags)
+         VALUES (?1, ?2, ?3, ?4)",
         params![
             document.item.id,
             document.item.title,
             document.body,
-            document.item.category,
             document.item.tags.join(" ")
         ],
     )
-    .map_err(|err| format!("failed to write FTS row: {err}"))?;
+    .map_err(|err| format!("FTS 행을 쓰지 못했습니다: {err}"))?;
 
     Ok(())
 }
@@ -826,14 +784,14 @@ fn remove_missing_documents(
 ) -> Result<(), String> {
     let mut stmt = conn
         .prepare("SELECT id FROM documents")
-        .map_err(|err| format!("failed to prepare document cleanup: {err}"))?;
+        .map_err(|err| format!("문서 정리를 준비하지 못했습니다: {err}"))?;
     let ids = stmt
         .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|err| format!("failed to query document ids: {err}"))?;
+        .map_err(|err| format!("문서 ID를 조회하지 못했습니다: {err}"))?;
 
     let mut missing = Vec::new();
     for id in ids {
-        let id = id.map_err(|err| format!("failed to read document id: {err}"))?;
+        let id = id.map_err(|err| format!("문서 ID를 읽지 못했습니다: {err}"))?;
         if !indexed_ids.contains(&id) {
             missing.push(id);
         }
@@ -844,9 +802,9 @@ fn remove_missing_documents(
             "DELETE FROM documents_fts WHERE document_id = ?1",
             params![id],
         )
-        .map_err(|err| format!("failed to remove stale FTS row: {err}"))?;
+            .map_err(|err| format!("오래된 FTS 행을 제거하지 못했습니다: {err}"))?;
         conn.execute("DELETE FROM documents WHERE id = ?1", params![id])
-            .map_err(|err| format!("failed to remove stale document row: {err}"))?;
+            .map_err(|err| format!("오래된 문서 행을 제거하지 못했습니다: {err}"))?;
     }
 
     Ok(())
@@ -856,21 +814,20 @@ fn parse_markdown_document(content: &str) -> Result<ParsedDocument, String> {
     let normalized = content.replace("\r\n", "\n");
     let rest = normalized
         .strip_prefix("---\n")
-        .ok_or_else(|| "missing YAML frontmatter".to_string())?;
+        .ok_or_else(|| "YAML frontmatter가 없습니다".to_string())?;
     let closing_index = rest
         .find("\n---\n")
-        .ok_or_else(|| "unterminated YAML frontmatter".to_string())?;
+        .ok_or_else(|| "YAML frontmatter가 닫히지 않았습니다".to_string())?;
     let yaml = &rest[..closing_index];
     let body = rest[closing_index + "\n---\n".len()..]
         .strip_prefix('\n')
         .unwrap_or(&rest[closing_index + "\n---\n".len()..])
         .to_string();
     let mut meta: Frontmatter =
-        serde_yaml::from_str(yaml).map_err(|err| format!("invalid YAML frontmatter: {err}"))?;
+        serde_yaml::from_str(yaml).map_err(|err| format!("잘못된 YAML frontmatter: {err}"))?;
 
     meta.id = normalize_required(meta.id, "id")?;
     meta.title = normalize_title(Some(meta.title));
-    meta.category = normalize_optional_string(meta.category);
     meta.tags = normalize_tags(meta.tags);
     validate_rfc3339(&meta.created_at, "created_at")?;
     validate_rfc3339(&meta.updated_at, "updated_at")?;
@@ -880,22 +837,22 @@ fn parse_markdown_document(content: &str) -> Result<ParsedDocument, String> {
 
 fn compose_markdown_document(document: &ParsedDocument) -> Result<String, String> {
     let yaml = serde_yaml::to_string(&document.meta)
-        .map_err(|err| format!("failed to serialize frontmatter: {err}"))?;
+        .map_err(|err| format!("frontmatter를 직렬화하지 못했습니다: {err}"))?;
     Ok(format!("---\n{}---\n\n{}", yaml, document.body))
 }
 
 fn validate_rfc3339(value: &str, field: &str) -> Result<(), String> {
     DateTime::parse_from_rfc3339(value)
         .map(|_| ())
-        .map_err(|_| format!("{field} must be RFC3339"))
+        .map_err(|_| format!("{field} 값은 RFC3339 형식이어야 합니다"))
 }
 
 fn write_file_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| "target path has no parent directory".to_string())?;
+        .ok_or_else(|| "대상 경로에 상위 디렉터리가 없습니다".to_string())?;
     fs::create_dir_all(parent)
-        .map_err(|err| format!("failed to create parent directory: {err}"))?;
+        .map_err(|err| format!("상위 디렉터리를 만들지 못했습니다: {err}"))?;
 
     let temp_path = parent.join(format!(
         ".{}.{}.tmp",
@@ -904,19 +861,19 @@ fn write_file_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .unwrap_or("moa"),
         Uuid::new_v4()
     ));
-    fs::write(&temp_path, bytes).map_err(|err| format!("failed to write temp file: {err}"))?;
+    fs::write(&temp_path, bytes).map_err(|err| format!("임시 파일을 쓰지 못했습니다: {err}"))?;
 
     if path.exists() {
         #[cfg(windows)]
         {
             fs::remove_file(path)
-                .map_err(|err| format!("failed to replace existing file: {err}"))?;
+                .map_err(|err| format!("기존 파일을 교체하지 못했습니다: {err}"))?;
         }
     }
 
     fs::rename(&temp_path, path).map_err(|err| {
         let _ = fs::remove_file(&temp_path);
-        format!("failed to move temp file into place: {err}")
+        format!("임시 파일을 대상 위치로 이동하지 못했습니다: {err}")
     })
 }
 
@@ -981,13 +938,13 @@ fn sanitize_fts_query(query: &str) -> String {
 }
 
 fn normalize_title(title: Option<String>) -> String {
-    normalize_optional_string(title).unwrap_or_else(|| "Untitled".to_string())
+    normalize_optional_string(title).unwrap_or_else(|| "제목 없음".to_string())
 }
 
 fn normalize_required(value: String, field: &str) -> Result<String, String> {
     let normalized = value.trim().to_string();
     if normalized.is_empty() {
-        Err(format!("{field} is required"))
+        Err(format!("{field} 값은 필수입니다"))
     } else {
         Ok(normalized)
     }
@@ -1032,14 +989,14 @@ fn load_tags(conn: &Connection, document_id: &str) -> Result<Vec<String>, String
              WHERE dt.document_id = ?1
              ORDER BY t.name ASC",
         )
-        .map_err(|err| format!("failed to prepare tag load: {err}"))?;
+        .map_err(|err| format!("태그 불러오기를 준비하지 못했습니다: {err}"))?;
     let rows = stmt
         .query_map(params![document_id], |row| row.get::<_, String>(0))
-        .map_err(|err| format!("failed to query tags: {err}"))?;
+        .map_err(|err| format!("태그를 조회하지 못했습니다: {err}"))?;
 
     let mut tags = Vec::new();
     for row in rows {
-        tags.push(row.map_err(|err| format!("failed to read tag: {err}"))?);
+        tags.push(row.map_err(|err| format!("태그를 읽지 못했습니다: {err}"))?);
     }
     Ok(tags)
 }
@@ -1048,7 +1005,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<usize, String> {
     let sql = format!("SELECT COUNT(*) FROM {table}");
     let count: i64 = conn
         .query_row(&sql, [], |row| row.get(0))
-        .map_err(|err| format!("failed to count {table}: {err}"))?;
+        .map_err(|err| format!("{table} 행 수를 세지 못했습니다: {err}"))?;
     Ok(count.try_into().unwrap_or(0))
 }
 
@@ -1080,12 +1037,12 @@ fn unique_path(path: PathBuf) -> PathBuf {
 
 fn resolve_vault_relative_path(vault_path: &Path, relative_path: &str) -> Result<PathBuf, String> {
     if relative_path.contains('\\') || relative_path.contains("..") {
-        return Err(format!("unsafe relative path: {relative_path}"));
+        return Err(format!("안전하지 않은 상대 경로입니다: {relative_path}"));
     }
 
     let full_path = vault_path.join(relative_path);
     if !full_path.starts_with(vault_path) {
-        return Err(format!("path escapes vault: {relative_path}"));
+        return Err(format!("보관함 밖으로 벗어나는 경로입니다: {relative_path}"));
     }
     Ok(full_path)
 }
@@ -1155,7 +1112,6 @@ mod tests {
             &vault,
             CreateDocumentInput {
                 title: Some("Local First Note".to_string()),
-                category: Some("Project".to_string()),
                 tags: Some(vec!["Markdown".to_string(), " local ".to_string()]),
                 body: Some("Body text for search.".to_string()),
             },
@@ -1175,7 +1131,6 @@ mod tests {
             &vault,
             SearchInput {
                 query: "search".to_string(),
-                category: None,
                 tags: None,
                 sort: None,
             },
@@ -1188,7 +1143,6 @@ mod tests {
             SaveDocumentInput {
                 id: document.id,
                 title: "Korean Search".to_string(),
-                category: Some("Project".to_string()),
                 tags: vec!["markdown".to_string()],
                 body: "검색 가능한 본문입니다.".to_string(),
             },
@@ -1198,7 +1152,6 @@ mod tests {
             &vault,
             SearchInput {
                 query: "본문".to_string(),
-                category: None,
                 tags: None,
                 sort: None,
             },
@@ -1217,7 +1170,6 @@ mod tests {
             &vault,
             CreateDocumentInput {
                 title: Some("Original Title".to_string()),
-                category: None,
                 tags: None,
                 body: None,
             },
@@ -1230,7 +1182,6 @@ mod tests {
             SaveDocumentInput {
                 id: document.id.clone(),
                 title: "Changed Title".to_string(),
-                category: Some("Research".to_string()),
                 tags: vec!["FTS".to_string()],
                 body: "Changed body".to_string(),
             },
@@ -1240,7 +1191,6 @@ mod tests {
         let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
         assert_eq!(reloaded.relative_path, original_path);
         assert_eq!(reloaded.title, "Changed Title");
-        assert_eq!(reloaded.category.as_deref(), Some("Research"));
         assert_eq!(reloaded.tags, vec!["fts"]);
         assert_eq!(reloaded.body, "Changed body");
 
@@ -1255,7 +1205,6 @@ mod tests {
             &vault,
             CreateDocumentInput {
                 title: Some("Restorable".to_string()),
-                category: None,
                 tags: None,
                 body: Some("Can be indexed again.".to_string()),
             },
@@ -1280,7 +1229,6 @@ mod tests {
             &vault,
             CreateDocumentInput {
                 title: Some("Delete Me".to_string()),
-                category: None,
                 tags: None,
                 body: None,
             },

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { mockInvoke } from "./mockStorage";
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: unknown;
@@ -20,7 +21,6 @@ export type VaultSummary = {
 };
 
 export type DocumentFilter = {
-  category?: string | null;
   tag?: string | null;
   query?: string | null;
 };
@@ -28,7 +28,6 @@ export type DocumentFilter = {
 export type DocumentListItem = {
   id: string;
   title: string;
-  category?: string | null;
   tags: string[];
   relativePath: string;
   createdAt: string;
@@ -39,7 +38,6 @@ export type DocumentListItem = {
 export type DocumentPayload = {
   id: string;
   title: string;
-  category?: string | null;
   tags: string[];
   body: string;
   relativePath: string;
@@ -49,7 +47,6 @@ export type DocumentPayload = {
 
 export type CreateDocumentInput = {
   title?: string | null;
-  category?: string | null;
   tags?: string[] | null;
   body?: string | null;
 };
@@ -57,7 +54,6 @@ export type CreateDocumentInput = {
 export type SaveDocumentInput = {
   id: string;
   title: string;
-  category?: string | null;
   tags: string[];
   body: string;
 };
@@ -75,7 +71,6 @@ export type DeleteResult = {
 
 export type SearchInput = {
   query: string;
-  category?: string | null;
   tags?: string[] | null;
   sort?: "updatedAt" | null;
 };
@@ -83,7 +78,6 @@ export type SearchInput = {
 export type SearchResult = {
   id: string;
   title: string;
-  category?: string | null;
   tags: string[];
   relativePath: string;
   updatedAt: string;
@@ -152,9 +146,13 @@ function desktopInvoke<T>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   if (!isTauriDesktop()) {
+    if (import.meta.env.DEV) {
+      return mockInvoke<T>(command, args);
+    }
+
     return Promise.reject(
       new Error(
-        "Moa storage is available in the Tauri desktop app. Run npm.cmd run tauri dev to use the local vault.",
+        "Moa 저장소는 Tauri 데스크톱 앱에서 사용할 수 있습니다. 로컬 보관함을 사용하려면 npm.cmd run tauri dev를 실행하세요.",
       ),
     );
   }

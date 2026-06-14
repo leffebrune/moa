@@ -19,7 +19,7 @@ fn initialize_vault(
     let config_dir = app
         .path()
         .app_config_dir()
-        .map_err(|err| format!("failed to resolve app config directory: {err}"))?;
+        .map_err(|err| format!("앱 설정 디렉터리 경로를 찾지 못했습니다: {err}"))?;
     let vault_path = match path {
         Some(path) => std::path::PathBuf::from(path),
         None => read_global_settings(&config_dir)?
@@ -27,7 +27,7 @@ fn initialize_vault(
             .unwrap_or(
                 app.path()
                     .document_dir()
-                    .map_err(|err| format!("failed to resolve documents directory: {err}"))?
+                    .map_err(|err| format!("문서 디렉터리 경로를 찾지 못했습니다: {err}"))?
                     .join("Moa Vault"),
             ),
     };
