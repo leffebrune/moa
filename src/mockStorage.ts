@@ -127,7 +127,7 @@ function createDocument(input: CreateDocumentInput): DocumentPayload {
     title,
     tags: normalizeTags(input?.tags ?? []),
     body: input?.body ?? "",
-    relativePath: `notes/${slugify(title)}.md`,
+    relativePath: uniqueMockRelativePath(title, now),
     createdAt: now,
     updatedAt: now,
     contentHash: createHash(title, input?.body ?? ""),
@@ -143,19 +143,25 @@ function saveDocument(input: SaveDocumentInput): SaveResult {
   }
 
   const updatedAt = new Date().toISOString();
+  const title = normalizeTitle(input.title);
+  const relativePath = input.syncFileName
+    ? uniqueMockRelativePath(title, documents[index].createdAt, documents[index].relativePath)
+    : documents[index].relativePath;
   documents[index] = {
     ...documents[index],
-    title: normalizeTitle(input.title),
+    title,
     tags: normalizeTags(input.tags),
     body: input.body,
+    relativePath,
     updatedAt,
-    contentHash: createHash(input.title, input.body),
+    contentHash: createHash(title, input.body),
   };
 
   return {
     id: input.id,
     relativePath: documents[index].relativePath,
     updatedAt,
+    fileNameSyncError: null,
   };
 }
 
@@ -310,7 +316,7 @@ function scoreDocument(document: MockDocument, query: string): number {
 }
 
 function normalizeTitle(value?: string | null): string {
-  return normalizeOptional(value) ?? "Untitled";
+  return normalizeOptional(value) ?? "제목 없음";
 }
 
 function normalizeOptional(value?: string | null): string | null {
@@ -328,14 +334,47 @@ function createId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `mock-${Date.now()}`;
 }
 
+function uniqueMockRelativePath(
+  title: string,
+  createdAt: string,
+  currentRelativePath?: string,
+): string {
+  const date = createdAt.slice(0, 10);
+  const slug = slugify(title);
+  const base = `notes/${date}-${slug}`;
+  let candidate = `${base}.md`;
+  let suffix = 2;
+
+  while (
+    candidate !== currentRelativePath &&
+    documents.some((document) => document.relativePath === candidate)
+  ) {
+    candidate = `${base}-${suffix}.md`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
 function slugify(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "untitled"
-  );
+  let slug = "";
+  let lastWasDash = false;
+
+  for (const char of value.trim().toLowerCase()) {
+    if (`<>:"/\\|?*`.includes(char)) {
+      continue;
+    }
+
+    if (/[\p{Letter}\p{Number}]/u.test(char)) {
+      slug += char;
+      lastWasDash = false;
+    } else if (!lastWasDash) {
+      slug += "-";
+      lastWasDash = true;
+    }
+  }
+
+  return slug.replace(/^-+|-+$/g, "") || "untitled";
 }
 
 function createHash(...values: string[]): string {

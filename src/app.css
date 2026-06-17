@@ -514,6 +514,49 @@ input {
   background: var(--color-danger);
 }
 
+.confirm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-7);
+  min-height: 52px;
+  padding: var(--space-7) var(--space-8);
+  border-bottom: 1px solid var(--color-divider);
+  color: var(--color-danger-text);
+  background: var(--color-danger-soft-bg);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.confirm-bar span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.confirm-bar div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-5);
+}
+
+.confirm-bar button {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-weight: 800;
+}
+
+.confirm-bar button.secondary {
+  color: var(--color-text-control);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.confirm-bar button.danger {
+  color: var(--color-surface);
+  background: var(--color-danger);
+}
+
 .editor-layout {
   display: flex;
   flex: 1;
@@ -586,7 +629,7 @@ textarea {
 }
 
 .markdown-body {
-  max-width: 840px;
+  max-width: none;
   padding-top: 24px;
   color: var(--color-text-reader);
   font-size: 16px;
@@ -703,6 +746,19 @@ textarea {
   }
 
   .toolbar-actions button {
+    flex: 1;
+  }
+
+  .confirm-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .confirm-bar div {
+    justify-content: stretch;
+  }
+
+  .confirm-bar button {
     flex: 1;
   }
 }

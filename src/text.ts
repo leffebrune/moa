@@ -4,11 +4,12 @@ export const TEXT = {
     title: "로컬 노트",
   },
   actions: {
+    cancel: "취소",
     clearFilters: "필터 지우기",
     delete: "삭제",
+    moveToTrash: "휴지통으로 이동",
     newDocument: "새 문서",
     rebuildIndex: "인덱스 다시 만들기",
-    saveNow: "지금 저장",
     useVault: "보관함 사용",
   },
   aria: {
@@ -28,7 +29,6 @@ export const TEXT = {
     moveToTrash: (title: string) => `"${title}" 문서를 로컬 휴지통으로 이동할까요?`,
   },
   defaults: {
-    newDocumentBody: "# 제목 없음\n\n여기에 내용을 작성하세요.",
     newDocumentTitle: "제목 없음",
   },
   empty: {
@@ -64,12 +64,6 @@ export const TEXT = {
     indexRebuilt: "마크다운 파일에서 인덱스를 다시 만들었습니다.",
     vaultLoaded: "보관함을 불러왔습니다.",
   },
-  placeholders: {
-    all: "전체",
-    search: "제목, 본문, 태그",
-    tags: "쉼표로 구분한 태그",
-    vaultPath: "보관함 경로",
-  },
   saveState: {
     dirty: "저장 안 됨",
     error: "저장 실패",
@@ -78,6 +72,7 @@ export const TEXT = {
     saving: "저장 중",
   },
   state: {
+    deleting: "삭제 중",
     detailsClosed: "상세",
     detailsOpen: "숨기기",
     loading: "불러오는 중...",

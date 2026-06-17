@@ -57,6 +57,7 @@ fn run() -> Result<(), String> {
                 title: required_flag(&flags, "title")?,
                 tags: optional_csv_flag(&flags, "tags").unwrap_or_default(),
                 body: required_flag(&flags, "body")?,
+                sync_file_name: false,
             };
             print_json(&save_document_in_vault(&vault, input)?)?;
         }

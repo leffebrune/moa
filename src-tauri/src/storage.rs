@@ -119,6 +119,7 @@ pub struct SaveDocumentInput {
     pub title: String,
     pub tags: Vec<String>,
     pub body: String,
+    pub sync_file_name: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,6 +128,7 @@ pub struct SaveResult {
     pub id: String,
     pub relative_path: String,
     pub updated_at: String,
+    pub file_name_sync_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -387,12 +389,42 @@ pub fn save_document_in_vault(
     let full_path = resolve_vault_relative_path(vault_path, &existing.relative_path)?;
 
     write_file_replace(&full_path, content.as_bytes())?;
-    index_single_document(vault_path, &existing.relative_path)?;
+    let mut relative_path = existing.relative_path;
+    let mut file_name_sync_error = None;
+
+    if input.sync_file_name {
+        match synced_note_relative_path(
+            vault_path,
+            &parsed.meta.created_at,
+            &parsed.meta.title,
+            &relative_path,
+        ) {
+            Ok(next_relative_path) if next_relative_path != relative_path => {
+                let next_full_path = resolve_vault_relative_path(vault_path, &next_relative_path)?;
+                match fs::rename(&full_path, &next_full_path) {
+                    Ok(()) => {
+                        relative_path = next_relative_path;
+                    }
+                    Err(err) => {
+                        file_name_sync_error =
+                            Some(format!("Failed to sync file name with title: {err}"));
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(err) => {
+                file_name_sync_error = Some(err);
+            }
+        }
+    }
+
+    index_single_document(vault_path, &relative_path)?;
 
     Ok(SaveResult {
         id: existing.id,
-        relative_path: existing.relative_path,
+        relative_path,
         updated_at,
+        file_name_sync_error,
     })
 }
 
@@ -879,17 +911,54 @@ fn write_file_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 fn unique_note_file_name(vault_path: &Path, title: &str) -> Result<String, String> {
     let date = Local::now().format("%Y-%m-%d");
+    unique_note_file_name_for_date(vault_path, &date.to_string(), title, None)
+}
+
+fn synced_note_relative_path(
+    vault_path: &Path,
+    created_at: &str,
+    title: &str,
+    current_relative_path: &str,
+) -> Result<String, String> {
+    let date = DateTime::parse_from_rfc3339(created_at)
+        .map_err(|_| "created_at must be an RFC3339 timestamp".to_string())?
+        .format("%Y-%m-%d")
+        .to_string();
+    let file_name =
+        unique_note_file_name_for_date(vault_path, &date, title, Some(current_relative_path))?;
+    Ok(format!("{NOTES_DIR}/{file_name}"))
+}
+
+fn unique_note_file_name_for_date(
+    vault_path: &Path,
+    date: &str,
+    title: &str,
+    current_relative_path: Option<&str>,
+) -> Result<String, String> {
     let slug = slugify_title(title);
     let base = format!("{date}-{slug}");
     let mut candidate = format!("{base}.md");
     let mut suffix = 2;
 
-    while notes_path(vault_path).join(&candidate).exists() {
+    while note_file_name_exists(vault_path, &candidate, current_relative_path) {
         candidate = format!("{base}-{suffix}.md");
         suffix += 1;
     }
 
     Ok(candidate)
+}
+
+fn note_file_name_exists(
+    vault_path: &Path,
+    file_name: &str,
+    current_relative_path: Option<&str>,
+) -> bool {
+    let relative_path = format!("{NOTES_DIR}/{file_name}");
+    if current_relative_path == Some(relative_path.as_str()) {
+        return false;
+    }
+
+    notes_path(vault_path).join(file_name).exists()
 }
 
 fn slugify_title(title: &str) -> String {
@@ -1145,6 +1214,7 @@ mod tests {
                 title: "Korean Search".to_string(),
                 tags: vec!["markdown".to_string()],
                 body: "검색 가능한 본문입니다.".to_string(),
+                sync_file_name: false,
             },
         )
         .expect("document saves");
@@ -1184,6 +1254,7 @@ mod tests {
                 title: "Changed Title".to_string(),
                 tags: vec!["FTS".to_string()],
                 body: "Changed body".to_string(),
+                sync_file_name: false,
             },
         )
         .expect("document saves");
@@ -1193,6 +1264,140 @@ mod tests {
         assert_eq!(reloaded.title, "Changed Title");
         assert_eq!(reloaded.tags, vec!["fts"]);
         assert_eq!(reloaded.body, "Changed body");
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn save_syncs_file_name_when_requested() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Original Title".to_string()),
+                tags: None,
+                body: None,
+            },
+        )
+        .expect("document is created");
+        let created_date = DateTime::parse_from_rfc3339(&document.created_at)
+            .expect("created_at parses")
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let saved = save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: document.id.clone(),
+                title: "Changed Title".to_string(),
+                tags: Vec::new(),
+                body: "Changed body".to_string(),
+                sync_file_name: true,
+            },
+        )
+        .expect("document saves");
+
+        assert_eq!(
+            saved.relative_path,
+            format!("notes/{created_date}-changed-title.md")
+        );
+        assert!(vault.join(&saved.relative_path).is_file());
+        assert!(!vault.join(&document.relative_path).exists());
+
+        let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
+        assert_eq!(reloaded.relative_path, saved.relative_path);
+        assert_eq!(reloaded.title, "Changed Title");
+
+        let saved_again = save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: document.id.clone(),
+                title: "Changed Title".to_string(),
+                tags: Vec::new(),
+                body: "Changed body again".to_string(),
+                sync_file_name: true,
+            },
+        )
+        .expect("document saves again");
+
+        assert_eq!(saved_again.relative_path, reloaded.relative_path);
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn save_syncs_file_name_with_suffix_on_conflict() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let first = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Shared Title".to_string()),
+                tags: None,
+                body: None,
+            },
+        )
+        .expect("first document is created");
+        let second = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Temporary Title".to_string()),
+                tags: None,
+                body: None,
+            },
+        )
+        .expect("second document is created");
+
+        let saved = save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: second.id.clone(),
+                title: "Shared Title".to_string(),
+                tags: Vec::new(),
+                body: String::new(),
+                sync_file_name: true,
+            },
+        )
+        .expect("document saves");
+
+        assert_ne!(saved.relative_path, first.relative_path);
+        assert!(saved.relative_path.ends_with("-shared-title-2.md"));
+        assert!(vault.join(&saved.relative_path).is_file());
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn save_sync_uses_untitled_fallback_for_blank_title() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Original Title".to_string()),
+                tags: None,
+                body: None,
+            },
+        )
+        .expect("document is created");
+
+        let saved = save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: document.id.clone(),
+                title: "   ".to_string(),
+                tags: Vec::new(),
+                body: "# Body Heading".to_string(),
+                sync_file_name: true,
+            },
+        )
+        .expect("document saves");
+        let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
+
+        assert_eq!(reloaded.title, "제목 없음");
+        assert!(saved.relative_path.ends_with("-제목-없음.md"));
+        assert!(!saved.relative_path.ends_with("-body-heading.md"));
 
         let _ = fs::remove_dir_all(vault);
     }

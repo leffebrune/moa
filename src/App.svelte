@@ -47,6 +47,7 @@
   let isLoading = true;
   let isDeleting = false;
   let isRebuilding = false;
+  let pendingDeleteDocument: DocumentPayload | null = null;
   let searchQuery = "";
   let isSearchDetailsOpen = false;
   let searchSort: SearchSort = "relevance";
@@ -59,7 +60,10 @@
   let lastSavedSnapshot = "";
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let saveQueue: Promise<void> = Promise.resolve();
+  let draftRevision = 0;
   let requestSerial = 0;
+  const deletedDocumentIds = new Set<string>();
 
   $: renderedHtml = activeDocument ? markdown.render(activeDocument.body) : "";
   $: draftSnapshot = activeDocument
@@ -86,7 +90,6 @@
       if (searchTimer) {
         clearTimeout(searchTimer);
       }
-      void flushSave();
     };
   });
 
@@ -154,7 +157,10 @@
       return;
     }
 
-    await flushSave();
+    pendingDeleteDocument = null;
+    if (!(await leaveEditMode())) {
+      return;
+    }
     error = "";
     selectedId = id;
 
@@ -169,15 +175,18 @@
   }
 
   async function createNewDocument() {
-    await flushSave();
+    pendingDeleteDocument = null;
+    if (!(await leaveEditMode())) {
+      return;
+    }
     error = "";
     message = "";
 
     try {
       const document = await createDocument({
-        title: TEXT.defaults.newDocumentTitle,
+        title: "",
         tags: tagFilter ? [tagFilter] : [],
-        body: TEXT.defaults.newDocumentBody,
+        body: "",
       });
       await refreshDocuments(document.id);
       await openDocument(document.id, "edit");
@@ -188,22 +197,31 @@
   }
 
   async function deleteActiveDocument() {
-    if (!activeDocument || isDeleting) {
+    if (!activeDocument) {
       return;
     }
 
-    const title = activeDocument.title;
-    const confirmed = window.confirm(TEXT.confirm.moveToTrash(title));
-    if (!confirmed) {
+    pendingDeleteDocument = activeDocument;
+  }
+
+  async function confirmDeleteDocument() {
+    if (!pendingDeleteDocument || isDeleting) {
       return;
     }
 
+    const documentId = pendingDeleteDocument.id;
     isDeleting = true;
     error = "";
     message = "";
+    deletedDocumentIds.add(documentId);
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
 
     try {
-      await deleteDocument(activeDocument.id);
+      await deleteDocument(documentId);
+      pendingDeleteDocument = null;
       activeDocument = null;
       selectedId = null;
       lastSavedSnapshot = "";
@@ -213,10 +231,15 @@
       }
       message = TEXT.messages.documentMovedToTrash;
     } catch (err) {
+      deletedDocumentIds.delete(documentId);
       error = formatError(err);
     } finally {
       isDeleting = false;
     }
+  }
+
+  function cancelDeleteDocument() {
+    pendingDeleteDocument = null;
   }
 
   function loadDraft(document: DocumentPayload) {
@@ -228,6 +251,7 @@
       tags: parseTags(draftTags),
       body: draftBody,
     });
+    draftRevision = 0;
     saveState = "saved";
   }
 
@@ -235,6 +259,7 @@
     if (!activeDocument) {
       return;
     }
+    draftRevision += 1;
     saveState = "dirty";
     message = "";
     scheduleSave();
@@ -245,13 +270,31 @@
       clearTimeout(saveTimer);
     }
     saveTimer = setTimeout(() => {
-      void flushSave();
+      void flushSave({ syncFileName: false });
     }, 700);
   }
 
-  async function flushSave() {
-    if (!activeDocument || !hasUnsavedChanges || saveState === "saving") {
-      return;
+  async function leaveEditMode() {
+    if (viewMode !== "edit") {
+      return true;
+    }
+
+    const saved = await flushSave({ syncFileName: true, force: true });
+    if (saved) {
+      viewMode = "view";
+    }
+    return saved;
+  }
+
+  async function flushSave(options: { syncFileName?: boolean; force?: boolean } = {}) {
+    if (!activeDocument) {
+      return true;
+    }
+
+    const syncFileName = options.syncFileName ?? false;
+    const force = options.force ?? false;
+    if (!force && !hasUnsavedChanges) {
+      return true;
     }
 
     if (saveTimer) {
@@ -259,35 +302,63 @@
       saveTimer = null;
     }
 
+    const documentId = activeDocument.id;
+    const revision = draftRevision;
     saveState = "saving";
     error = "";
 
     const title = draftTitle.trim() || TEXT.defaults.newDocumentTitle;
     const tags = parseTags(draftTags);
     const body = draftBody;
+    const saveTask = saveQueue.then(async () => {
+      if (deletedDocumentIds.has(documentId)) {
+        return;
+      }
+      if (!syncFileName && activeDocument?.id === documentId && revision !== draftRevision) {
+        saveState = "dirty";
+        return;
+      }
+      const result = await saveDocument({
+        id: documentId,
+        title,
+        tags,
+        body,
+        syncFileName,
+      });
+
+      if (deletedDocumentIds.has(documentId)) {
+        return;
+      }
+      if (activeDocument?.id === documentId) {
+        activeDocument = {
+          ...activeDocument,
+          title,
+          tags,
+          body,
+          updatedAt: result.updatedAt,
+          relativePath: result.relativePath,
+        };
+        lastSavedSnapshot = JSON.stringify({ title, tags, body });
+        saveState = "saved";
+      }
+      if (result.fileNameSyncError) {
+        message = `내용은 저장됐지만 파일명 변경은 실패했습니다. ${result.fileNameSyncError}`;
+      }
+      await refreshDocuments(documentId);
+      status = await getStorageStatus();
+    });
+    saveQueue = saveTask.catch(() => {});
 
     try {
-      const result = await saveDocument({
-        id: activeDocument.id,
-        title,
-        tags,
-        body,
-      });
-      activeDocument = {
-        ...activeDocument,
-        title,
-        tags,
-        body,
-        updatedAt: result.updatedAt,
-        relativePath: result.relativePath,
-      };
-      lastSavedSnapshot = JSON.stringify({ title, tags, body });
-      saveState = "saved";
-      await refreshDocuments(activeDocument.id);
-      status = await getStorageStatus();
+      await saveTask;
+      return true;
     } catch (err) {
+      if (deletedDocumentIds.has(documentId)) {
+        return true;
+      }
       saveState = "error";
       error = formatError(err);
+      return false;
     }
   }
 
@@ -307,7 +378,9 @@
   }
 
   async function enterViewMode() {
-    await flushSave();
+    if (!(await leaveEditMode())) {
+      return;
+    }
     if (activeDocument) {
       activeDocument = {
         ...activeDocument,
@@ -324,6 +397,7 @@
       return;
     }
 
+    pendingDeleteDocument = null;
     viewMode = "edit";
     await tick();
     editorTextarea?.focus();
@@ -362,7 +436,9 @@
   }
 
   async function rebuild() {
-    await flushSave();
+    if (!(await leaveEditMode())) {
+      return;
+    }
     isRebuilding = true;
     error = "";
     message = "";
@@ -380,7 +456,9 @@
   }
 
   async function switchVault() {
-    await flushSave();
+    if (!(await leaveEditMode())) {
+      return;
+    }
     isLoading = true;
     error = "";
     message = "";
@@ -475,12 +553,7 @@
   }
 </script>
 
-<svelte:window
-  on:keydown={handleKeyboardShortcut}
-  on:beforeunload={() => {
-    void flushSave();
-  }}
-/>
+<svelte:window on:keydown={handleKeyboardShortcut} />
 
 <main class="workspace">
   <aside class="library-panel" aria-label={TEXT.aria.library}>
@@ -525,7 +598,6 @@
               <input
                 id="document-search"
                 type="search"
-                placeholder={TEXT.placeholders.search}
                 bind:value={searchQuery}
                 on:input={queueSearchRefresh}
               />
@@ -549,7 +621,6 @@
                 <span>{TEXT.labels.tag}</span>
                 <input
                   list="tag-options"
-                  placeholder={TEXT.placeholders.all}
                   bind:value={tagFilter}
                   on:input={queueSearchRefresh}
                 />
@@ -619,7 +690,7 @@
           <span class="setting-label">{TEXT.labels.vault}</span>
           <label class="path-field">
             <span class="sr-only">{TEXT.aria.vaultPath}</span>
-            <input bind:value={settingVaultPath} placeholder={TEXT.placeholders.vaultPath} />
+            <input bind:value={settingVaultPath} />
           </label>
         </div>
         <div>
@@ -688,14 +759,25 @@
           <span class:warn={saveState === "dirty" || saveState === "error"}>
             {saveLabel(saveState)}
           </span>
-          <button type="button" on:click={flushSave} disabled={!hasUnsavedChanges || saveState === "saving"}>
-            {TEXT.actions.saveNow}
-          </button>
           <button class="danger" type="button" disabled={isDeleting} on:click={deleteActiveDocument}>
             {TEXT.actions.delete}
           </button>
         </div>
       </header>
+
+      {#if pendingDeleteDocument?.id === activeDocument.id}
+        <div class="confirm-bar" role="alert">
+          <span>{TEXT.confirm.moveToTrash(pendingDeleteDocument.title)}</span>
+          <div>
+            <button type="button" class="secondary" on:click={cancelDeleteDocument}>
+              {TEXT.actions.cancel}
+            </button>
+            <button type="button" class="danger" disabled={isDeleting} on:click={confirmDeleteDocument}>
+              {isDeleting ? TEXT.state.deleting : TEXT.actions.moveToTrash}
+            </button>
+          </div>
+        </div>
+      {/if}
 
       {#if viewMode === "edit"}
         <section class="editor-layout" aria-label={TEXT.aria.editor}>
@@ -708,7 +790,6 @@
               <span>{TEXT.labels.tags}</span>
               <input
                 list="tag-options"
-                placeholder={TEXT.placeholders.tags}
                 bind:value={draftTags}
                 on:input={markDirty}
               />

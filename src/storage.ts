@@ -56,12 +56,14 @@ export type SaveDocumentInput = {
   title: string;
   tags: string[];
   body: string;
+  syncFileName: boolean;
 };
 
 export type SaveResult = {
   id: string;
   relativePath: string;
   updatedAt: string;
+  fileNameSyncError?: string | null;
 };
 
 export type DeleteResult = {
