@@ -594,7 +594,6 @@ pub fn rebuild_index_at(vault_path: &Path) -> Result<IndexStatus, String> {
 }
 
 pub fn get_storage_status_in_vault(vault_path: &Path) -> Result<StorageStatus, String> {
-    let status = rebuild_index_at(vault_path)?;
     let conn = open_ready_database(vault_path)?;
     let document_count = count_rows(&conn, "documents")?;
     let tag_count = count_rows(&conn, "tags")?;
@@ -605,8 +604,8 @@ pub fn get_storage_status_in_vault(vault_path: &Path) -> Result<StorageStatus, S
         database_path: path_to_string(&database_path(vault_path)),
         document_count,
         tag_count,
-        issue_count: status.issue_count,
-        issues: status.issues,
+        issue_count: 0,
+        issues: Vec::new(),
     })
 }
 
@@ -1422,6 +1421,29 @@ mod tests {
 
         let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
         assert_eq!(reloaded.title, "Restorable");
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn status_does_not_rebuild_index_from_markdown_files() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Indexed Only Once".to_string()),
+                tags: None,
+                body: Some("Status should not rescan this file.".to_string()),
+            },
+        )
+        .expect("document is created");
+
+        fs::remove_file(vault.join(&document.relative_path)).expect("document file removed");
+        let status = get_storage_status_in_vault(&vault).expect("status reads database only");
+
+        assert_eq!(status.document_count, 1);
+        assert_eq!(status.issue_count, 0);
 
         let _ = fs::remove_dir_all(vault);
     }

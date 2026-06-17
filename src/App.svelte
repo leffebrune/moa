@@ -345,7 +345,6 @@
         message = `내용은 저장됐지만 파일명 변경은 실패했습니다. ${result.fileNameSyncError}`;
       }
       await refreshDocuments(documentId);
-      status = await getStorageStatus();
     });
     saveQueue = saveTask.catch(() => {});
 
@@ -390,6 +389,7 @@
       };
     }
     viewMode = "view";
+    status = await getStorageStatus();
   }
 
   async function enterEditMode() {
@@ -444,8 +444,14 @@
     message = "";
 
     try {
-      await rebuildIndex();
-      status = await getStorageStatus();
+      const rebuilt = await rebuildIndex();
+      const nextStatus = await getStorageStatus();
+      status = {
+        ...nextStatus,
+        documentCount: rebuilt.documentCount,
+        issueCount: rebuilt.issueCount,
+        issues: rebuilt.issues,
+      };
       await refreshDocuments(selectedId);
       message = TEXT.messages.indexRebuilt;
     } catch (err) {
