@@ -12,3 +12,8 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite-dev*.log
+output/
+
+# Agent-local state and shared work journals
+.agents/
+worklog/

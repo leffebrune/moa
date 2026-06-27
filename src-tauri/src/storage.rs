@@ -206,8 +206,8 @@ pub fn read_global_settings(config_dir: &Path) -> Result<Option<GlobalSettings>,
         return Ok(None);
     }
 
-    let content = fs::read_to_string(&path)
-        .map_err(|err| format!("전역 설정을 읽지 못했습니다: {err}"))?;
+    let content =
+        fs::read_to_string(&path).map_err(|err| format!("전역 설정을 읽지 못했습니다: {err}"))?;
     serde_json::from_str(&content)
         .map(Some)
         .map_err(|err| format!("전역 설정을 해석하지 못했습니다: {err}"))
@@ -374,22 +374,33 @@ pub fn save_document_in_vault(
     input: SaveDocumentInput,
 ) -> Result<SaveResult, String> {
     let existing = read_document_in_vault(vault_path, &input.id)?;
-    let updated_at = Local::now().to_rfc3339();
+    let title = normalize_title(Some(input.title));
+    let tags = normalize_tags(input.tags);
+    let body = input.body;
+    let content_changed = title != existing.title || tags != existing.tags || body != existing.body;
+    let updated_at = if content_changed {
+        Local::now().to_rfc3339()
+    } else {
+        existing.updated_at.clone()
+    };
     let parsed = ParsedDocument {
         meta: Frontmatter {
             id: existing.id.clone(),
-            title: normalize_title(Some(input.title)),
-            tags: normalize_tags(input.tags),
-            created_at: existing.created_at,
+            title,
+            tags,
+            created_at: existing.created_at.clone(),
             updated_at: updated_at.clone(),
         },
-        body: input.body,
+        body,
     };
-    let content = compose_markdown_document(&parsed)?;
     let full_path = resolve_vault_relative_path(vault_path, &existing.relative_path)?;
 
-    write_file_replace(&full_path, content.as_bytes())?;
-    let mut relative_path = existing.relative_path;
+    if content_changed {
+        let content = compose_markdown_document(&parsed)?;
+        write_file_replace(&full_path, content.as_bytes())?;
+    }
+
+    let mut relative_path = existing.relative_path.clone();
     let mut file_name_sync_error = None;
 
     if input.sync_file_name {
@@ -418,7 +429,9 @@ pub fn save_document_in_vault(
         }
     }
 
-    index_single_document(vault_path, &relative_path)?;
+    if content_changed || relative_path != existing.relative_path {
+        index_single_document(vault_path, &relative_path)?;
+    }
 
     Ok(SaveResult {
         id: existing.id,
@@ -776,12 +789,12 @@ fn upsert_document(conn: &Connection, document: &IndexedDocument) -> Result<(), 
             "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
             params![tag],
         )
-            .map_err(|err| format!("태그를 갱신하지 못했습니다: {err}"))?;
+        .map_err(|err| format!("태그를 갱신하지 못했습니다: {err}"))?;
         let tag_id: i64 = conn
             .query_row("SELECT id FROM tags WHERE name = ?1", params![tag], |row| {
                 row.get(0)
             })
-        .map_err(|err| format!("태그 ID를 불러오지 못했습니다: {err}"))?;
+            .map_err(|err| format!("태그 ID를 불러오지 못했습니다: {err}"))?;
         conn.execute(
             "INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES (?1, ?2)",
             params![document.item.id, tag_id],
@@ -833,7 +846,7 @@ fn remove_missing_documents(
             "DELETE FROM documents_fts WHERE document_id = ?1",
             params![id],
         )
-            .map_err(|err| format!("오래된 FTS 행을 제거하지 못했습니다: {err}"))?;
+        .map_err(|err| format!("오래된 FTS 행을 제거하지 못했습니다: {err}"))?;
         conn.execute("DELETE FROM documents WHERE id = ?1", params![id])
             .map_err(|err| format!("오래된 문서 행을 제거하지 못했습니다: {err}"))?;
     }
@@ -1110,7 +1123,9 @@ fn resolve_vault_relative_path(vault_path: &Path, relative_path: &str) -> Result
 
     let full_path = vault_path.join(relative_path);
     if !full_path.starts_with(vault_path) {
-        return Err(format!("보관함 밖으로 벗어나는 경로입니다: {relative_path}"));
+        return Err(format!(
+            "보관함 밖으로 벗어나는 경로입니다: {relative_path}"
+        ));
     }
     Ok(full_path)
 }
@@ -1268,6 +1283,53 @@ mod tests {
     }
 
     #[test]
+    fn save_skips_unchanged_document_without_touching_file_or_updated_at() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Stable Title".to_string()),
+                tags: Some(vec!["note".to_string()]),
+                body: Some("Stable body".to_string()),
+            },
+        )
+        .expect("document is created");
+        let full_path = vault.join(&document.relative_path);
+        let before_content = fs::read_to_string(&full_path).expect("document content reads");
+        let before_modified = fs::metadata(&full_path)
+            .expect("document metadata reads")
+            .modified()
+            .expect("document mtime reads");
+
+        let saved = save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: document.id.clone(),
+                title: document.title.clone(),
+                tags: document.tags.clone(),
+                body: document.body.clone(),
+                sync_file_name: false,
+            },
+        )
+        .expect("unchanged document save is accepted");
+
+        let after_content = fs::read_to_string(&full_path).expect("document content reads again");
+        let after_modified = fs::metadata(&full_path)
+            .expect("document metadata reads again")
+            .modified()
+            .expect("document mtime reads again");
+        let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
+
+        assert_eq!(saved.updated_at, document.updated_at);
+        assert_eq!(reloaded.updated_at, document.updated_at);
+        assert_eq!(after_content, before_content);
+        assert_eq!(after_modified, before_modified);
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
     fn save_syncs_file_name_when_requested() {
         let vault = temp_vault();
         initialize_vault_at(vault.clone()).expect("vault initializes");
@@ -1321,6 +1383,54 @@ mod tests {
         .expect("document saves again");
 
         assert_eq!(saved_again.relative_path, reloaded.relative_path);
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn save_syncs_file_name_without_bumping_updated_at_when_content_is_unchanged() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Original Title".to_string()),
+                tags: None,
+                body: Some("Body".to_string()),
+            },
+        )
+        .expect("document is created");
+
+        let saved_content = save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: document.id.clone(),
+                title: "Changed Title".to_string(),
+                tags: Vec::new(),
+                body: "Body".to_string(),
+                sync_file_name: false,
+            },
+        )
+        .expect("document content saves");
+
+        let synced_name = save_document_in_vault(
+            &vault,
+            SaveDocumentInput {
+                id: document.id.clone(),
+                title: "Changed Title".to_string(),
+                tags: Vec::new(),
+                body: "Body".to_string(),
+                sync_file_name: true,
+            },
+        )
+        .expect("document file name syncs");
+
+        assert_eq!(synced_name.updated_at, saved_content.updated_at);
+        assert_ne!(synced_name.relative_path, document.relative_path);
+
+        let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
+        assert_eq!(reloaded.updated_at, saved_content.updated_at);
+        assert_eq!(reloaded.relative_path, synced_name.relative_path);
 
         let _ = fs::remove_dir_all(vault);
     }

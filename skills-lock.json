@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "worklog": {
+      "source": "leffebrune/worklog",
+      "sourceType": "github",
+      "skillPath": "skills/worklog/SKILL.md",
+      "computedHash": "122cb437c8cf325761905807be8725af96717739a8c969b37d116b3ebcee22c4"
+    }
+  }
+}

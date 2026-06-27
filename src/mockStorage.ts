@@ -142,20 +142,30 @@ function saveDocument(input: SaveDocumentInput): SaveResult {
     throw new Error(`Document not found: ${input.id}`);
   }
 
-  const updatedAt = new Date().toISOString();
   const title = normalizeTitle(input.title);
+  const tags = normalizeTags(input.tags);
+  const body = input.body;
+  const contentChanged =
+    title !== documents[index].title ||
+    tags.join("\n") !== documents[index].tags.join("\n") ||
+    body !== documents[index].body;
+  const updatedAt = contentChanged
+    ? new Date().toISOString()
+    : documents[index].updatedAt;
   const relativePath = input.syncFileName
     ? uniqueMockRelativePath(title, documents[index].createdAt, documents[index].relativePath)
     : documents[index].relativePath;
-  documents[index] = {
-    ...documents[index],
-    title,
-    tags: normalizeTags(input.tags),
-    body: input.body,
-    relativePath,
-    updatedAt,
-    contentHash: createHash(title, input.body),
-  };
+  if (contentChanged || relativePath !== documents[index].relativePath) {
+    documents[index] = {
+      ...documents[index],
+      title,
+      tags,
+      body,
+      relativePath,
+      updatedAt,
+      contentHash: createHash(title, tags.join(","), body),
+    };
+  }
 
   return {
     id: input.id,

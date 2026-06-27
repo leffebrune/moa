@@ -58,6 +58,8 @@
   let draftBody = "";
   let editorTextarea: HTMLTextAreaElement | null = null;
   let lastSavedSnapshot = "";
+  let needsFileNameSync = false;
+  let titleFocusStartedByPointer = false;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let saveQueue: Promise<void> = Promise.resolve();
@@ -68,7 +70,7 @@
   $: renderedHtml = activeDocument ? markdown.render(activeDocument.body) : "";
   $: draftSnapshot = activeDocument
     ? JSON.stringify({
-        title: draftTitle.trim(),
+        title: draftTitle.trim() || TEXT.defaults.newDocumentTitle,
         tags: parseTags(draftTags),
         body: draftBody,
       })
@@ -225,6 +227,7 @@
       activeDocument = null;
       selectedId = null;
       lastSavedSnapshot = "";
+      needsFileNameSync = false;
       await refreshDocuments(null);
       if (documents[0]) {
         await openDocument(documents[0].id, "view");
@@ -247,22 +250,45 @@
     draftTags = document.tags.join(", ");
     draftBody = document.body;
     lastSavedSnapshot = JSON.stringify({
-      title: draftTitle.trim(),
+      title: draftTitle.trim() || TEXT.defaults.newDocumentTitle,
       tags: parseTags(draftTags),
       body: draftBody,
     });
+    needsFileNameSync = false;
     draftRevision = 0;
     saveState = "saved";
   }
 
-  function markDirty() {
+  function markDirty(options: { syncFileName?: boolean } = {}) {
     if (!activeDocument) {
       return;
+    }
+    if (options.syncFileName) {
+      needsFileNameSync = true;
     }
     draftRevision += 1;
     saveState = "dirty";
     message = "";
     scheduleSave();
+  }
+
+  function trackTitlePointerFocus(event: PointerEvent) {
+    if (event.currentTarget instanceof HTMLInputElement) {
+      titleFocusStartedByPointer = document.activeElement !== event.currentTarget;
+    }
+  }
+
+  function selectTitleText(event: FocusEvent) {
+    if (event.currentTarget instanceof HTMLInputElement) {
+      event.currentTarget.select();
+    }
+  }
+
+  function preserveTitleSelection(event: PointerEvent) {
+    if (titleFocusStartedByPointer) {
+      event.preventDefault();
+      titleFocusStartedByPointer = false;
+    }
   }
 
   function scheduleSave() {
@@ -279,7 +305,7 @@
       return true;
     }
 
-    const saved = await flushSave({ syncFileName: true, force: true });
+    const saved = await flushSave({ syncFileName: true, force: needsFileNameSync });
     if (saved) {
       viewMode = "view";
     }
@@ -293,13 +319,17 @@
 
     const syncFileName = options.syncFileName ?? false;
     const force = options.force ?? false;
-    if (!force && !hasUnsavedChanges) {
-      return true;
-    }
 
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
+    }
+
+    if (!force && !hasUnsavedChanges) {
+      if (saveState === "dirty") {
+        saveState = "saved";
+      }
+      return true;
     }
 
     const documentId = activeDocument.id;
@@ -339,6 +369,9 @@
           relativePath: result.relativePath,
         };
         lastSavedSnapshot = JSON.stringify({ title, tags, body });
+        if (syncFileName && !result.fileNameSyncError) {
+          needsFileNameSync = false;
+        }
         saveState = "saved";
       }
       if (result.fileNameSyncError) {
@@ -471,6 +504,7 @@
     activeDocument = null;
     selectedId = null;
     lastSavedSnapshot = "";
+    needsFileNameSync = false;
 
     try {
       vault = await initializeVault(emptyToNull(settingVaultPath));
@@ -790,14 +824,20 @@
           <div class="metadata-grid">
             <label>
               <span>{TEXT.labels.title}</span>
-              <input bind:value={draftTitle} on:input={markDirty} />
+              <input
+                bind:value={draftTitle}
+                on:pointerdown={trackTitlePointerFocus}
+                on:focus={selectTitleText}
+                on:pointerup={preserveTitleSelection}
+                on:input={() => markDirty({ syncFileName: true })}
+              />
             </label>
             <label class="wide-field">
               <span>{TEXT.labels.tags}</span>
               <input
                 list="tag-options"
                 bind:value={draftTags}
-                on:input={markDirty}
+                on:input={() => markDirty()}
               />
             </label>
           </div>
@@ -807,7 +847,7 @@
             aria-label={TEXT.aria.markdownSource}
             spellcheck="true"
             bind:value={draftBody}
-            on:input={markDirty}
+            on:input={() => markDirty()}
           ></textarea>
         </section>
       {:else}
