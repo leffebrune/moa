@@ -240,7 +240,7 @@ pub fn initialize_vault_at(vault_path: PathBuf) -> Result<VaultSummary, String> 
     ensure_vault_settings(&vault_path)?;
     let conn = open_database(&vault_path)?;
     initialize_schema(&conn)?;
-    let status = rebuild_index_at(&vault_path)?;
+    let status = sync_index_at(&vault_path)?;
 
     Ok(VaultSummary {
         vault_path: path_to_string(&vault_path),
@@ -606,6 +606,78 @@ pub fn rebuild_index_at(vault_path: &Path) -> Result<IndexStatus, String> {
     })
 }
 
+fn sync_index_at(vault_path: &Path) -> Result<IndexStatus, String> {
+    ensure_vault_dirs(vault_path)?;
+    let conn = open_ready_database(vault_path)?;
+    let mut seen_ids = HashSet::new();
+    let mut indexed_ids = HashSet::new();
+    let mut issues = Vec::new();
+
+    let entries = fs::read_dir(notes_path(vault_path))
+        .map_err(|err| format!("?명듃 ?붾젆?곕━瑜??쎌? 紐삵뻽?듬땲?? {err}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("?명듃 ??ぉ???쎌? 紐삵뻽?듬땲?? {err}"))?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        let relative_path = format!(
+            "{NOTES_DIR}/{}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "?명듃 ?뚯씪紐낆씠 ?щ컮瑜?UTF-8???꾨떃?덈떎".to_string())?
+        );
+        let file_mtime = file_mtime(&path)?;
+
+        let cached = conn
+            .query_row(
+                "SELECT id, file_mtime FROM documents WHERE relative_path = ?1",
+                params![&relative_path],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|err| format!("臾몄꽌 ?몃뜳???곹깭瑜?議고쉶?섏? 紐삵뻽?듬땲?? {err}"))?;
+
+        if let Some((id, indexed_mtime)) = cached {
+            if indexed_mtime == file_mtime {
+                seen_ids.insert(id.clone());
+                indexed_ids.insert(id);
+                continue;
+            }
+        }
+
+        match read_indexed_document(vault_path, &relative_path) {
+            Ok(document) => {
+                if !seen_ids.insert(document.item.id.clone()) {
+                    issues.push(StorageIssue {
+                        kind: "duplicateDocumentId".to_string(),
+                        message: format!("以묐났??臾몄꽌 ID: {}", document.item.id),
+                        relative_path: Some(relative_path),
+                    });
+                    continue;
+                }
+
+                upsert_document(&conn, &document)?;
+                indexed_ids.insert(document.item.id);
+            }
+            Err(err) => issues.push(StorageIssue {
+                kind: "invalidDocument".to_string(),
+                message: err,
+                relative_path: Some(relative_path),
+            }),
+        }
+    }
+
+    remove_missing_documents(&conn, &indexed_ids)?;
+
+    Ok(IndexStatus {
+        document_count: indexed_ids.len(),
+        issue_count: issues.len(),
+        issues,
+    })
+}
+
 pub fn get_storage_status_in_vault(vault_path: &Path) -> Result<StorageStatus, String> {
     let conn = open_ready_database(vault_path)?;
     let document_count = count_rows(&conn, "documents")?;
@@ -852,6 +924,17 @@ fn remove_missing_documents(
     }
 
     Ok(())
+}
+
+fn file_mtime(path: &Path) -> Result<i64, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|err| format!("留덊겕?ㅼ슫 硫뷀??곗씠?곕? ?쎌? 紐삵뻽?듬땲?? {err}"))?;
+    Ok(metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0))
 }
 
 fn parse_markdown_document(content: &str) -> Result<ParsedDocument, String> {
@@ -1156,6 +1239,31 @@ mod tests {
 
     fn temp_vault() -> PathBuf {
         std::env::temp_dir().join(format!("moa-storage-test-{}", Uuid::new_v4()))
+    }
+
+    fn indexed_at(vault: &Path, id: &str) -> String {
+        let conn = open_ready_database(vault).expect("database opens");
+        conn.query_row(
+            "SELECT last_indexed_at FROM documents WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .expect("last_indexed_at reads")
+    }
+
+    fn markdown_document(id: &str, title: &str, tags: Vec<String>, body: &str) -> String {
+        let now = Local::now().to_rfc3339();
+        compose_markdown_document(&ParsedDocument {
+            meta: Frontmatter {
+                id: id.to_string(),
+                title: title.to_string(),
+                tags,
+                created_at: now.clone(),
+                updated_at: now,
+            },
+            body: body.to_string(),
+        })
+        .expect("markdown document composes")
     }
 
     #[test]
@@ -1531,6 +1639,130 @@ mod tests {
 
         let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
         assert_eq!(reloaded.title, "Restorable");
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn initialize_skips_unchanged_indexed_files() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Already Indexed".to_string()),
+                tags: None,
+                body: Some("This should not be reindexed.".to_string()),
+            },
+        )
+        .expect("document is created");
+        let first_indexed_at = indexed_at(&vault, &document.id);
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let summary = initialize_vault_at(vault.clone()).expect("vault initializes again");
+        let second_indexed_at = indexed_at(&vault, &document.id);
+
+        assert_eq!(summary.document_count, 1);
+        assert_eq!(second_indexed_at, first_indexed_at);
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn initialize_indexes_externally_added_markdown_files() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let id = Uuid::new_v4().to_string();
+        let relative_path = "notes/external-note.md";
+        fs::write(
+            vault.join(relative_path),
+            markdown_document(
+                &id,
+                "External Note",
+                vec!["outside".to_string()],
+                "Added outside the application.",
+            ),
+        )
+        .expect("external note writes");
+
+        let summary = initialize_vault_at(vault.clone()).expect("vault syncs");
+        let listed = list_documents_in_vault(&vault, None).expect("documents list");
+
+        assert_eq!(summary.document_count, 1);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, id);
+        assert_eq!(listed[0].relative_path, relative_path);
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn initialize_removes_index_rows_for_deleted_markdown_files() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Remove Externally".to_string()),
+                tags: None,
+                body: Some("This file will disappear.".to_string()),
+            },
+        )
+        .expect("document is created");
+
+        fs::remove_file(vault.join(&document.relative_path)).expect("document file removed");
+        let summary = initialize_vault_at(vault.clone()).expect("vault syncs");
+        let listed = list_documents_in_vault(&vault, None).expect("documents list");
+
+        assert_eq!(summary.document_count, 0);
+        assert!(listed.is_empty());
+
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[test]
+    fn initialize_reindexes_files_with_changed_mtime() {
+        let vault = temp_vault();
+        initialize_vault_at(vault.clone()).expect("vault initializes");
+        let document = create_document_in_vault(
+            &vault,
+            CreateDocumentInput {
+                title: Some("Original External Edit".to_string()),
+                tags: None,
+                body: Some("Old searchable body.".to_string()),
+            },
+        )
+        .expect("document is created");
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        fs::write(
+            vault.join(&document.relative_path),
+            markdown_document(
+                &document.id,
+                "Externally Edited",
+                vec!["synced".to_string()],
+                "Fresh searchable body.",
+            ),
+        )
+        .expect("document file rewrites");
+
+        let summary = initialize_vault_at(vault.clone()).expect("vault syncs");
+        let reloaded = read_document_in_vault(&vault, &document.id).expect("document reloads");
+        let results = search_documents_in_vault(
+            &vault,
+            SearchInput {
+                query: "Fresh".to_string(),
+                tags: Some(vec!["synced".to_string()]),
+                sort: None,
+            },
+        )
+        .expect("search works");
+
+        assert_eq!(summary.document_count, 1);
+        assert_eq!(reloaded.title, "Externally Edited");
+        assert_eq!(reloaded.tags, vec!["synced"]);
+        assert_eq!(reloaded.body, "Fresh searchable body.");
+        assert_eq!(results.len(), 1);
 
         let _ = fs::remove_dir_all(vault);
     }

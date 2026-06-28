@@ -605,6 +605,7 @@
       <button
         class="icon-button primary"
         type="button"
+        disabled={isLoading}
         on:click={createNewDocument}
         title={TEXT.actions.newDocument}
       >
@@ -777,7 +778,11 @@
       <div class="alert">{message}</div>
     {/if}
 
-    {#if activeDocument}
+    {#if isLoading}
+      <section class="empty-document">
+        <p>{TEXT.state.loadingVault}</p>
+      </section>
+    {:else if activeDocument}
       <header class="document-toolbar">
         <div class="mode-switch" aria-label={TEXT.aria.mode}>
           <button
@@ -882,7 +887,7 @@
       <section class="empty-document">
         <h2>{TEXT.empty.documentPanelTitle}</h2>
         <p>{TEXT.empty.documentPanelBody}</p>
-        <button type="button" on:click={createNewDocument}>{TEXT.actions.newDocument}</button>
+        <button type="button" disabled={isLoading} on:click={createNewDocument}>{TEXT.actions.newDocument}</button>
       </section>
     {/if}
   </section>
